@@ -25,7 +25,9 @@
 1) Скачайте архив отсюда:
 [Tab Freezer](https://drive.google.com/uc?export=download&id=17udNiMu9RSf6Hu4S-41X9pt_OtaMcXt_)
 2) Распакуйте в удобное место
+
 или
+
 1) Cкачайте файлы обычным способом с GitHub и засуньте их в удобную папку.
 2) Создайте внутри папку icons
 3) Файлы с названием snowflake...png переместите в папку icons 
