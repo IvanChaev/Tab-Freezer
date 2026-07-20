@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Tab Freezer — заморозка неактивных вкладок",
+  "version": "1.6.2",
+  "description": "Автоматически замораживает неактивные вкладки и позволяет закрывать их прямо из попапа.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Tab Freezer",
+    "default_icon": {
+      "16": "icons/snowflake-16.png",
+      "32": "icons/snowflake-32.png"
+    }
+  },
+  "icons": {
+    "48": "icons/snowflake-48.png",
+    "128": "icons/snowflake-128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["img/*", "icons/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

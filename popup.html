@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<title>Tab Freezer</title>
+<link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <!-- Шапка с кнопкой логов -->
+  <div class="top-header">
+    <h1>❄️ Tab Freezer</h1>
+    <button id="openLogsBtn" class="secondary logs-btn" title="Журнал событий">📋 Логи</button>
+  </div>
+
+  <!-- Строка статистики -->
+  <div class="stats" id="stats">Сейчас вкладок: …</div>
+
+  <!-- Кнопка открытия списка вкладок -->
+  <button id="openTabListBtn" class="primary-list">
+    📋 Открыть список вкладок ➔
+  </button>
+
+  <!-- ================= СТРАНИЦА 1: НАСТРОЙКИ ================= -->
+  <div id="pageMain">
+    <!-- Поле: замораживать через -->
+    <div class="field-row">
+      <label for="timeout">Замораживать через (минут):</label>
+      <input type="number" id="timeout" min="1" max="1440" />
+    </div>
+
+    <!-- Галочки -->
+    <div class="checkboxes-row">
+      <label class="checkbox">
+        <input type="checkbox" id="excludePinned" />
+        Не трогать закреплённые
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" id="excludeAudio" />
+        Не трогать со звуком
+      </label>
+    </div>
+
+    <!-- Кнопка управления белым списком -->
+    <button id="openWhitelistBtn" class="primary-list">
+      📝 Управление белым списком ➔
+    </button>
+
+    <!-- Блок очистки старых вкладок -->
+    <div class="danger-zone">
+      <div class="danger-title">Очистка старых вкладок</div>
+      <div class="close-row">
+        <label class="checkbox">
+          <input type="checkbox" id="autoClose" />
+          Автоматически закрывать замороженные через:
+        </label>
+        <input type="number" id="closeOldMinutes" value="120" min="1" max="10000" />
+        <span>мин.</span>
+      </div>
+      <button id="closeOldBtn" class="danger-btn">Закрыть старые вкладки сейчас</button>
+    </div>
+
+    <!-- Кнопки экспорта / импорта -->
+    <div class="settings-actions-row">
+      <button id="exportSettingsBtn" class="secondary">📤 Экспорт настроек</button>
+      <button id="importSettingsBtn" class="secondary">📥 Импорт настроек</button>
+    </div>
+
+    <!-- Кнопка "Сохранить настройки" -->
+    <button id="save">Сохранить настройки</button>
+  </div>
+
+  <!-- ================= СТРАНИЦА 2: СПИСОК ВКЛАДОК ================= -->
+  <div id="pageList" hidden>
+    <div class="list-header">
+      <button id="backBtn" class="secondary">🠔 Назад к настройкам</button>
+    </div>
+    <div id="tabList" class="tab-container"></div>
+  </div>
+
+  <!-- ================= СТРАНИЦА 3: БЕЛЫЙ СПИСОК ================= -->
+  <div id="pageWhitelist" hidden>
+    <div class="list-header">
+      <button id="backFromWhitelistBtn" class="secondary">🠔 Назад к настройкам</button>
+    </div>
+    <p class="hint-text">
+      Введите домены (по одному на строку).<br>
+      Вкладки с этих доменов не будут замораживаться и закрываться.
+    </p>
+    <textarea id="whitelistEditor" rows="6"></textarea>
+    <div class="whitelist-actions-row">
+      <button id="saveWhitelistBtn">Сохранить белый список</button>
+      <button id="cancelWhitelistBtn" class="secondary">Отмена</button>
+    </div>
+  </div>
+
+  <!-- ================= СТРАНИЦА 4: ЛОГИ ================= -->
+  <div id="pageLogs" hidden>
+    <div class="list-header">
+      <button id="backFromLogsBtn" class="secondary">🠔 Назад к настройкам</button>
+    </div>
+    <div class="logs-actions-row">
+      <button id="copyLogsBtn" class="secondary">📑 Копировать все логи</button>
+      <button id="clearLogsBtn" class="secondary">🗑️ Очистить</button>
+    </div>
+    <div id="logsContainer" class="logs-container"></div>
+  </div>
+
+  <p class="status" id="status"></p>
+
+  <script src="shared.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
