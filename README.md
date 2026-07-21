@@ -71,7 +71,7 @@
 ## 🛠 Технологии
 
 - Чистый JavaScript (ES6+)
-- HTML5 и CSS3
+- HTML5 и ситуативно CSS3
 - Manifest V3
 - Хранилище: `chrome.storage.local` и `chrome.storage.session`
 - Service Worker как background-скрипт
