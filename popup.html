@@ -1,113 +1,166 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="UTF-8" />
-<title>Tab Freezer</title>
-<link rel="stylesheet" href="popup.css" />
+  <meta charset="UTF-8">
+  <title>Tab Freezer</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --danger: #ef4444;
+    }
+
+    body {
+      width: 280px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      font-weight: 600;
+      font-size: 1rem;
+    }
+    .header .version {
+      margin-left: auto;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    .stats {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 16px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .stats span { color: var(--text); font-weight: 500; }
+
+    .btn {
+      width: 100%;
+      background-color: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.2s;
+      margin-bottom: 8px;
+      text-align: center;
+      display: block;
+      text-decoration: none;
+      box-sizing: border-box;
+    }
+    .btn:hover { background-color: var(--accent-hover); }
+    .btn-secondary {
+      background-color: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-secondary:hover { background-color: rgba(255, 255, 255, 0.05); }
+    .btn-sm {
+      padding: 6px 12px;
+      width: auto;
+      margin-bottom: 0;
+      font-size: 0.8rem;
+    }
+
+    .temp-block {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 16px;
+    }
+    .temp-block label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      display: block;
+      margin-bottom: 6px;
+    }
+    .temp-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .temp-row select {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+    }
+    .temp-row .btn {
+      flex: 0;
+      margin-bottom: 0;
+    }
+    .temp-status {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+    .temp-status .remove-temp {
+      background: none;
+      border: none;
+      color: var(--danger);
+      cursor: pointer;
+      text-decoration: underline;
+      padding: 0 4px;
+    }
+  </style>
 </head>
 <body>
-  <!-- Шапка с кнопкой логов -->
-  <div class="top-header">
-    <h1>❄️ Tab Freezer</h1>
-    <button id="openLogsBtn" class="secondary logs-btn" title="Журнал событий">📋 Логи</button>
+
+  <div class="header">
+    <span>❄️</span> Tab Freezer
+    <span class="version" id="popupVersion"></span>
   </div>
 
-  <!-- Строка статистики -->
-  <div class="stats" id="stats">Сейчас вкладок: …</div>
-
-  <!-- Кнопка открытия списка вкладок -->
-  <button id="openTabListBtn" class="primary-list">
-    📋 Открыть список вкладок ➔
-  </button>
-
-  <!-- ================= СТРАНИЦА 1: НАСТРОЙКИ ================= -->
-  <div id="pageMain">
-    <!-- Поле: замораживать через -->
-    <div class="field-row">
-      <label for="timeout">Замораживать через (минут):</label>
-      <input type="number" id="timeout" min="1" max="1440" />
-    </div>
-
-    <!-- Галочки -->
-    <div class="checkboxes-row">
-      <label class="checkbox">
-        <input type="checkbox" id="excludePinned" />
-        Не трогать закреплённые
-      </label>
-      <label class="checkbox">
-        <input type="checkbox" id="excludeAudio" />
-        Не трогать со звуком
-      </label>
-    </div>
-
-    <!-- Кнопка управления белым списком -->
-    <button id="openWhitelistBtn" class="primary-list">
-      📝 Управление белым списком ➔
-    </button>
-
-    <!-- Блок очистки старых вкладок -->
-    <div class="danger-zone">
-      <div class="danger-title">Очистка старых вкладок</div>
-      <div class="close-row">
-        <label class="checkbox">
-          <input type="checkbox" id="autoClose" />
-          Автоматически закрывать замороженные через:
-        </label>
-        <input type="number" id="closeOldMinutes" value="120" min="1" max="10000" />
-        <span>мин.</span>
-      </div>
-      <button id="closeOldBtn" class="danger-btn">Закрыть старые вкладки сейчас</button>
-    </div>
-
-    <!-- Кнопки экспорта / импорта -->
-    <div class="settings-actions-row">
-      <button id="exportSettingsBtn" class="secondary">📤 Экспорт настроек</button>
-      <button id="importSettingsBtn" class="secondary">📥 Импорт настроек</button>
-    </div>
-
-    <!-- Кнопка "Сохранить настройки" -->
-    <button id="save">Сохранить настройки</button>
+  <div class="stats" id="popupStats">
+    Загрузка статистики...
   </div>
 
-  <!-- ================= СТРАНИЦА 2: СПИСОК ВКЛАДОК ================= -->
-  <div id="pageList" hidden>
-    <div class="list-header">
-      <button id="backBtn" class="secondary">🠔 Назад к настройкам</button>
+  <!-- Блок временного исключения -->
+  <div class="temp-block">
+    <label>⏱ Временно игнорировать текущий сайт:</label>
+    <div class="temp-row">
+      <select id="tempDuration">
+        <option value="15">15 мин</option>
+        <option value="60" selected>1 час</option>
+        <option value="120">2 часа</option>
+        <option value="240">4 часа</option>
+        <option value="1440">1 день</option>
+      </select>
+      <button class="btn btn-sm" id="addTempExemptionBtn">Применить</button>
     </div>
-    <div id="tabList" class="tab-container"></div>
+    <div class="temp-status" id="tempStatus"></div>
   </div>
 
-  <!-- ================= СТРАНИЦА 3: БЕЛЫЙ СПИСОК ================= -->
-  <div id="pageWhitelist" hidden>
-    <div class="list-header">
-      <button id="backFromWhitelistBtn" class="secondary">🠔 Назад к настройкам</button>
-    </div>
-    <p class="hint-text">
-      Введите домены (по одному на строку).<br>
-      Вкладки с этих доменов не будут замораживаться и закрываться.
-    </p>
-    <textarea id="whitelistEditor" rows="6"></textarea>
-    <div class="whitelist-actions-row">
-      <button id="saveWhitelistBtn">Сохранить белый список</button>
-      <button id="cancelWhitelistBtn" class="secondary">Отмена</button>
-    </div>
-  </div>
+  <button class="btn" id="freezePopupBtn">❄️ Заморозить неактивные</button>
+  <a href="#" id="openDashboardLink" class="btn btn-secondary">⚙️ Панель управления</a>
 
-  <!-- ================= СТРАНИЦА 4: ЛОГИ ================= -->
-  <div id="pageLogs" hidden>
-    <div class="list-header">
-      <button id="backFromLogsBtn" class="secondary">🠔 Назад к настройкам</button>
-    </div>
-    <div class="logs-actions-row">
-      <button id="copyLogsBtn" class="secondary">📑 Копировать все логи</button>
-      <button id="clearLogsBtn" class="secondary">🗑️ Очистить</button>
-    </div>
-    <div id="logsContainer" class="logs-container"></div>
-  </div>
-
-  <p class="status" id="status"></p>
-
-  <script src="shared.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
