@@ -1,452 +1,402 @@
-importScripts("shared.js");
-
-// ---- Система логирования ----
-const MAX_LOGS = 500;
-
-async function addLog(action, details = "") {
-  try {
-    const data = await chrome.storage.local.get("appLogs");
-    const logs = data.appLogs || [];
-    const timestamp = new Date().toISOString();
-    
-    logs.unshift({ timestamp, action, details });
-    if (logs.length > MAX_LOGS) logs.length = MAX_LOGS;
-    
-    await chrome.storage.local.set({ appLogs: logs });
-  } catch (e) {
-    console.error("Ошибка записи лога:", e);
-  }
-}
+// background.js — финальная версия с усиленной инициализацией
 
 const DEFAULT_SETTINGS = {
   timeoutMinutes: 15,
   closeOldMinutes: 120,
-  autoClose: false,
+  autoClose: true,
   excludePinned: true,
   excludeAudio: true,
+  aggressiveFreeze: false,
   whitelist: []
 };
 
-const lastActive = new Map();
+const ALARM_NAME = "check-tabs";
 
-function now() {
-  return Date.now();
+function normalizeDomain(input) {
+  if (typeof input !== "string") return "";
+  let d = input.trim().toLowerCase();
+  d = d.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  d = d.split("/")[0].split("?")[0].split("#")[0].split(":")[0];
+  d = d.replace(/^\.+/, "").replace(/\.+$/, "");
+  if (d.startsWith("*.")) d = d.slice(2);
+  if (d.startsWith("www.")) d = d.slice(4);
+  return d;
 }
 
-function getTabIdleMs(tab, currentTimestamp) {
-  const nativeLast = (tab.lastAccessed && tab.lastAccessed > 0) ? tab.lastAccessed : 0;
-  const customLast = lastActive.get(tab.id) || 0;
-  const last = Math.max(nativeLast, customLast) || currentTimestamp;
-  return Math.max(0, currentTimestamp - last);
-}
-
-// ---- Работа с frozenAt в session storage ----
-async function getFrozenAtMap() {
-  const data = await chrome.storage.session.get('frozenAt');
-  return data.frozenAt || {};
-}
-
-async function setFrozenAt(tabId, timestamp) {
-  const map = await getFrozenAtMap();
-  map[tabId] = timestamp;
-  await chrome.storage.session.set({ frozenAt: map });
-}
-
-async function deleteFrozenAt(tabId) {
-  const map = await getFrozenAtMap();
-  delete map[tabId];
-  await chrome.storage.session.set({ frozenAt: map });
-}
-
-// ---- Настройки ----
-async function getSettings() {
-  try {
-    const local = await chrome.storage.local.get(null);
-    if (local && Object.keys(local).length > 0) {
-      return { ...DEFAULT_SETTINGS, ...local };
-    }
-    const synced = await chrome.storage.sync.get(null).catch(() => null);
-    if (synced && Object.keys(synced).length > 0) {
-      await chrome.storage.local.set(synced);
-      return { ...DEFAULT_SETTINGS, ...synced };
-    }
-  } catch {
-    // ignore
-  }
-  return DEFAULT_SETTINGS;
-}
-
-async function saveSettingsInternal(settings) {
-  await chrome.storage.local.set(settings);
-}
-
-function getHostname(url) {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
-}
-
-function isSystemPage(url) {
-  if (!url) return true;
-  return /^(about|moz-extension|chrome|chrome-extension|resource|data|view-source|jar|devtools|extension):/i.test(url);
-}
-
-function isWhitelisted(url, whitelist) {
-  const host = getHostname(url);
-  if (!host) return false;
-  return whitelist.some((entry) => {
-    const e = normalizeDomain(entry);
-    if (!e) return false;
-    return host === e || host.endsWith("." + e);
+function isWhitelisted(hostname, whitelist) {
+  if (!hostname || !Array.isArray(whitelist) || whitelist.length === 0) return false;
+  const host = hostname.toLowerCase();
+  return whitelist.some(domain => {
+    if (!domain) return false;
+    return host === domain || host.endsWith("." + domain);
   });
 }
 
-// ---- Единая функция проверки на возможность автозакрытия ----
-function isEligibleForAutoClose(tab, settings, nowTime, frozenMap) {
-  if (isSystemPage(tab.url)) return false;
-  if (tab.active) return false;
-  if (settings.excludePinned && tab.pinned) return false;
-  if (settings.excludeAudio && tab.audible) return false;
-  if (isWhitelisted(tab.url || "", settings.whitelist)) return false;
-  
-  if (!tab.discarded) return false;
-
-  const closeMs = settings.closeOldMinutes * 60 * 1000;
-  if (closeMs <= 0) return false;
-
-  const idleMs = getTabIdleMs(tab, nowTime);
-  return idleMs >= closeMs;
+async function getTempExemptions() {
+  const data = await chrome.storage.local.get("tempExemptions");
+  return data.tempExemptions || [];
 }
 
-// ---- Инициализация вкладок (с логированием) ----
-async function initTabs() {
-  const tabs = await chrome.tabs.query({});
-  const t = now();
-  const frozenMap = await getFrozenAtMap();
-  let needUpdate = false;
-  let restoredCount = 0;
-
-  for (const tab of tabs) {
-    if (!lastActive.has(tab.id)) {
-      lastActive.set(tab.id, tab.lastAccessed || t);
-    }
-    if (tab.discarded && !frozenMap[tab.id]) {
-      frozenMap[tab.id] = tab.lastAccessed || t;
-      needUpdate = true;
-      restoredCount++;
-    }
-    if (!tab.discarded && frozenMap[tab.id]) {
-      delete frozenMap[tab.id];
-      needUpdate = true;
-    }
-  }
-  if (needUpdate) {
-    await chrome.storage.session.set({ frozenAt: frozenMap });
-  }
-  addLog("Инициализация", `Обнаружено вкладок: ${tabs.length}. Восстановлено замороженных: ${restoredCount}`);
+async function setTempExemptions(exemptions) {
+  await chrome.storage.local.set({ tempExemptions: exemptions });
 }
 
-// ---- События активности (с логированием разморозки) ----
-chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  const t = now();
-  lastActive.set(activeInfo.tabId, t);
-  
-  const frozenMap = await getFrozenAtMap();
-  const isFrozen = !!frozenMap[activeInfo.tabId];
-  deleteFrozenAt(activeInfo.tabId);
-  
-  if (isFrozen) {
-    try {
-      const tab = await chrome.tabs.get(activeInfo.tabId).catch(() => null);
-      await chrome.tabs.reload(activeInfo.tabId);
-      addLog("Разморозка", `Активация и перезагрузка вкладки [ID: ${activeInfo.tabId}]: "${tab?.title || tab?.url || 'неизвестно'}"`);
-    } catch (e) {}
+async function isTempExempted(hostname) {
+  if (!hostname) return false;
+  const exemptions = await getTempExemptions();
+  const now = Date.now();
+  const active = exemptions.filter(e => e.expiry > now);
+  if (active.length !== exemptions.length) {
+    await setTempExemptions(active);
   }
-  
-  if (activeInfo.previousTabId) {
-    lastActive.set(activeInfo.previousTabId, t);
-  }
-});
+  return active.some(e => hostname === e.domain || hostname.endsWith("." + e.domain));
+}
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === "complete") {
-    lastActive.set(tabId, now());
-  }
-  if (changeInfo.discarded !== undefined) {
-    if (changeInfo.discarded) {
-      setFrozenAt(tabId, now());
-    } else {
-      deleteFrozenAt(tabId);
-    }
-  }
-});
-
-chrome.tabs.onCreated.addListener((tab) => {
-  lastActive.set(tab.id, now());
-});
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  lastActive.delete(tabId);
-  deleteFrozenAt(tabId);
-});
-
-chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
-  lastActive.delete(removedTabId);
-  deleteFrozenAt(removedTabId);
-  lastActive.set(addedTabId, now());
-});
-
-chrome.windows.onFocusChanged.addListener(async (windowId) => {
-  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
-  const tabs = await chrome.tabs.query({ active: true, windowId });
-  if (tabs[0]) {
-    lastActive.set(tabs[0].id, now());
-    deleteFrozenAt(tabs[0].id);
-  }
-});
-
-// ---- Заморозка с логированием ----
-async function discardTabSafely(tab) {
-  if (tab.active) return false;
+async function ensureSettings() {
   try {
-    const idleMin = Math.round(getTabIdleMs(tab, now()) / 60000);
-    await chrome.tabs.discard(tab.id);
-    await setFrozenAt(tab.id, now());
-    addLog("Заморозка", `Вкладка "${tab.title}" [ID: ${tab.id}] заморожена (бездействие: ~${idleMin} мин.)`);
-    return true;
-  } catch (e) {
-    addLog("Ошибка заморозки", `Не удалось заморозить "${tab.title}" [ID: ${tab.id}]: ${e.message}`);
-    return false;
-  }
-}
+    const data = await chrome.storage.local.get(["settings", "savedTabs", "logs", "totalFrozen", "tempExemptions"]);
+    let changed = false;
 
-// ---- Автоматическая проверка через alarms ----
-chrome.alarms.create("checkIdleTabs", { periodInMinutes: 0.5 });
-
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "checkIdleTabs") {
-    checkIdleTabs();
-  }
-});
-
-async function checkIdleTabs() {
-  await initTabs();
-  const settings = await getSettings();
-  const freezeMs = settings.timeoutMinutes * 60 * 1000;
-  const tabs = await chrome.tabs.query({});
-  const t = now();
-  const frozenMap = await getFrozenAtMap();
-
-  for (const tab of tabs) {
-    // ---- Заморозка ----
-    if (!tab.discarded && !tab.active && !isSystemPage(tab.url) &&
-        !(settings.excludePinned && tab.pinned) &&
-        !(settings.excludeAudio && tab.audible) &&
-        !isWhitelisted(tab.url || "", settings.whitelist)) {
-      const idleMs = getTabIdleMs(tab, t);
-      if (freezeMs > 0 && idleMs >= freezeMs) {
-        await discardTabSafely(tab);
+    let settings = data.settings;
+    if (!settings || typeof settings !== 'object') {
+      console.warn("settings отсутствуют или повреждены, создаём заново");
+      settings = { ...DEFAULT_SETTINGS };
+      changed = true;
+    } else {
+      for (const key of Object.keys(DEFAULT_SETTINGS)) {
+        if (!(key in settings)) {
+          settings[key] = DEFAULT_SETTINGS[key];
+          changed = true;
+          console.log(`Добавлено поле ${key} в settings`);
+        }
+      }
+      if (!Array.isArray(settings.whitelist)) {
+        settings.whitelist = [];
+        changed = true;
       }
     }
 
-    // ---- Автозакрытие (только замороженных, по времени) ----
-    if (settings.autoClose && isEligibleForAutoClose(tab, settings, t, frozenMap)) {
-      try {
-        const title = tab.title || tab.url;
-        await chrome.tabs.remove(tab.id);
-        delete frozenMap[tab.id];
-        await chrome.storage.session.set({ frozenAt: frozenMap });
-        addLog("Автозакрытие", `Закрыта старая замороженная вкладка "${title}" [ID: ${tab.id}]`);
-      } catch (e) { /* ignore */ }
+    if (changed) {
+      await chrome.storage.local.set({ settings });
+      console.log("Настройки обновлены:", settings);
+      await addLog("Инициализация", "Настройки восстановлены/дополнены");
+    } else {
+      console.log("Настройки в порядке:", settings);
     }
+
+    if (!data.savedTabs || !Array.isArray(data.savedTabs)) {
+      await chrome.storage.local.set({ savedTabs: [] });
+      changed = true;
+    }
+    if (!data.logs || !Array.isArray(data.logs)) {
+      await chrome.storage.local.set({ logs: [] });
+      changed = true;
+    }
+    if (typeof data.totalFrozen !== 'number') {
+      await chrome.storage.local.set({ totalFrozen: 0 });
+      changed = true;
+    }
+    if (!data.tempExemptions || !Array.isArray(data.tempExemptions)) {
+      await chrome.storage.local.set({ tempExemptions: [] });
+      changed = true;
+    }
+
+    if (changed) {
+      console.log("Все хранилища инициализированы");
+    }
+  } catch (e) {
+    console.error("ensureSettings error:", e);
   }
 }
 
-// ---- Ручное закрытие ВСЕХ замороженных вкладок (без учёта времени) ----
-async function closeOldTabs(minutes) {
-  // Параметр minutes игнорируется – кнопка закрывает все замороженные вкладки
-  const settings = await getSettings();
-  const tabs = await chrome.tabs.query({});
-  const frozenMap = await getFrozenAtMap();
-  let closed = 0;
-  let notDiscarded = 0;
-  let system = 0;
-  let active = 0;
-  let pinned = 0;
-  let audio = 0;
-  let whitelisted = 0;
-
-  for (const tab of tabs) {
-    if (isSystemPage(tab.url)) { system++; continue; }
-    if (tab.active) { active++; continue; }
-    if (settings.excludePinned && tab.pinned) { pinned++; continue; }
-    if (settings.excludeAudio && tab.audible) { audio++; continue; }
-    if (isWhitelisted(tab.url || "", settings.whitelist)) { whitelisted++; continue; }
-    if (!tab.discarded) { notDiscarded++; continue; }
-
-    // Закрываем все замороженные, прошедшие фильтры
-    try {
-      await chrome.tabs.remove(tab.id);
-      delete frozenMap[tab.id];
-      closed++;
-    } catch (e) { /* ignore */ }
+async function ensureAlarm() {
+  try {
+    const existing = await chrome.alarms.get(ALARM_NAME);
+    if (!existing) {
+      chrome.alarms.create(ALARM_NAME, { periodInMinutes: 1 });
+      addLog("Инициализация", `Создан алярм ${ALARM_NAME}`);
+    }
+  } catch (e) {
+    console.error("ensureAlarm error:", e);
   }
+}
 
-  let logDetails = `Всего вкладок: ${tabs.length}. ` +
-    `Закрыто замороженных: ${closed}. ` +
-    `Не заморожены: ${notDiscarded}, ` +
-    `Системные: ${system}, активные: ${active}, закреплённые: ${pinned}, со звуком: ${audio}, в белом списке: ${whitelisted}.`;
+async function addLog(action, details = "") {
+  try {
+    const data = await chrome.storage.local.get("logs");
+    const logs = data.logs || [];
+    logs.unshift({ timestamp: Date.now(), action, details });
+    if (logs.length > 100) logs.length = 100;
+    await chrome.storage.local.set({ logs });
+  } catch (e) {
+    console.error("Log error:", e);
+  }
+}
 
-  if (closed > 0) {
-    await chrome.storage.session.set({ frozenAt: frozenMap });
-    addLog("Очистка вкладок (ручная)", logDetails);
+async function isEligibleForFreeze(tab, settings) {
+  if (tab.active) return false;
+  if (!tab.url ||
+      tab.url.includes("dashboard.html") ||
+      tab.url.startsWith(chrome.runtime.getURL("")) ||
+      tab.url.startsWith("chrome-extension://") ||
+      tab.url.startsWith("moz-extension://") ||
+      tab.url.startsWith("edge://") ||
+      tab.url.startsWith("chrome://") ||
+      tab.url.startsWith("about:")) {
+    return false;
+  }
+  if (typeof tab.lastAccessed !== "number") return false;
+  if (!settings.aggressiveFreeze && tab.discarded) return false;
+  if (settings.excludePinned && tab.pinned) return false;
+  if (settings.excludeAudio && tab.audible) return false;
+
+  try {
+    const hostname = new URL(tab.url).hostname;
+    if (isWhitelisted(hostname, settings.whitelist)) return false;
+    if (await isTempExempted(hostname)) return false;
+  } catch (e) {
+    return false;
+  }
+  return true;
+}
+
+function makeSavedEntry(tab, now) {
+  return {
+    id: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : String(now) + Math.random().toString(36).substring(2, 10),
+    url: tab.url,
+    title: tab.title || tab.url,
+    favIconUrl: tab.favIconUrl || "",
+    closedAt: now
+  };
+}
+
+async function incrementTotalFrozen() {
+  try {
+    const data = await chrome.storage.local.get("totalFrozen");
+    const total = (data.totalFrozen || 0) + 1;
+    await chrome.storage.local.set({ totalFrozen: total });
+    return total;
+  } catch (e) {
+    console.error("Failed to increment totalFrozen:", e);
+  }
+}
+
+async function runFreezeCheck(reason = "alarm") {
+  try {
+    await ensureSettings();
+    const data = await chrome.storage.local.get(["settings", "savedTabs"]);
+    const settings = data.settings || DEFAULT_SETTINGS;
+    const savedTabs = data.savedTabs || [];
+    const now = Date.now();
+    let savedTabsChanged = false;
+
+    const timeoutMs = (settings.timeoutMinutes || 15) * 60 * 1000;
+    addLog("Проверка", `Причина: ${reason}. Тайм-аут: ${settings.timeoutMinutes} мин. Агрессивно: ${settings.aggressiveFreeze ? "да" : "нет"}`);
+
+    if (settings.autoClose && settings.closeOldMinutes > 0) {
+      const maxAgeMs = settings.closeOldMinutes * 60 * 1000;
+      const before = savedTabs.length;
+      const filtered = savedTabs.filter(t => (now - t.closedAt) <= maxAgeMs);
+      if (filtered.length !== before) {
+        savedTabs.length = 0;
+        savedTabs.push(...filtered);
+        savedTabsChanged = true;
+        addLog("Автоочистка", `Удалено устаревших: ${before - filtered.length}`);
+      }
+    }
+
+    const tabs = await chrome.tabs.query({});
+    let candidates = 0, frozenThisRun = 0;
+    for (const tab of tabs) {
+      if (!(await isEligibleForFreeze(tab, settings))) continue;
+      candidates++;
+      if ((now - tab.lastAccessed) > timeoutMs) {
+        if (settings.aggressiveFreeze) {
+          savedTabs.unshift(makeSavedEntry(tab, now));
+          savedTabsChanged = true;
+          try {
+            await chrome.tabs.remove(tab.id);
+            frozenThisRun++;
+            await incrementTotalFrozen();
+            addLog("Агрессивная заморозка", `Закрыта: ${tab.title}`);
+          } catch (err) {
+            addLog("Ошибка", `Не удалось закрыть ${tab.id}: ${err.message}`);
+          }
+        } else {
+          try {
+            await chrome.tabs.discard(tab.id);
+            frozenThisRun++;
+            await incrementTotalFrozen();
+            addLog("Заморозка", `Выгружена: ${tab.title}`);
+          } catch (err) {
+            addLog("Ошибка", `Не удалось выгрузить ${tab.id}: ${err.message}`);
+          }
+        }
+      }
+    }
+    if (frozenThisRun === 0) {
+      addLog("Проверка", `Кандидатов: ${candidates}, никто не подошёл.`);
+    }
+    if (savedTabsChanged) {
+      await chrome.storage.local.set({ savedTabs });
+    }
+  } catch (err) {
+    console.error("Freeze check error:", err);
+    addLog("Ошибка", `Сбой: ${err.message}`);
+  }
+}
+
+async function openDashboard() {
+  const dashboardUrl = chrome.runtime.getURL("dashboard.html");
+  const tabs = await chrome.tabs.query({ url: dashboardUrl });
+  if (tabs.length > 0) {
+    await chrome.tabs.update(tabs[0].id, { active: true });
+    await chrome.windows.update(tabs[0].windowId, { focused: true });
   } else {
-    addLog("Очистка вкладок (ручная)", logDetails + " (ни одна не закрыта)");
+    await chrome.tabs.create({ url: dashboardUrl });
   }
-  return closed;
 }
 
-// ---- Заморозить все сейчас ----
-async function freezeAllNow() {
-  const settings = await getSettings();
-  const tabs = await chrome.tabs.query({});
-  let frozen = 0;
+// === СТАРТ ===
+(async function init() {
+  console.log("Service worker started");
+  await ensureSettings();
+  await ensureAlarm();
+  await runFreezeCheck("worker-startup");
+})();
 
-  for (const tab of tabs) {
-    if (tab.discarded) continue;
-    if (isSystemPage(tab.url)) continue;
-    if (tab.active) continue;
-    if (settings.excludePinned && tab.pinned) continue;
-    if (settings.excludeAudio && tab.audible) continue;
-    if (isWhitelisted(tab.url || "", settings.whitelist)) continue;
-
-    const success = await discardTabSafely(tab);
-    if (success) frozen++;
-  }
-  addLog("Принудительная заморозка", `Заморожено вкладок по команде: ${frozen}`);
-  return frozen;
-}
-
-// ---- Категории для списка ----
-function getTabCategory(tab) {
-  if (tab.system) return "system";
-  if (tab.pinned || tab.immunePinned) return "pinned";
-  if (tab.discarded) return "frozen";
-  if (tab.immuneAudio) return "audio";
-  if (tab.immuneWhitelist) return "whitelist";
-  if (tab.active) return "active";
-  return "waiting";
-}
-
-const CATEGORY_RANK = {
-  pinned: 0,
-  frozen: 1,
-  waiting: 2,
-  active: 3,
-  audio: 4,
-  whitelist: 5,
-  system: 6
-};
-
-// ---- Обработка сообщений ----
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // ---- Логирование ----
-  if (msg?.type === "get-logs") {
-    chrome.storage.local.get("appLogs").then((data) => {
-      sendResponse({ logs: data.appLogs || [] });
-    });
-    return true;
-  }
-  if (msg?.type === "clear-logs") {
-    chrome.storage.local.set({ appLogs: [] }).then(() => {
-      addLog("Очистка логов", "История событий была очищена пользователем");
-      sendResponse({ ok: true });
-    });
-    return true;
-  }
-
-  if (msg?.type === "freeze-now") {
-    freezeAllNow().then((frozen) => sendResponse({ frozen }));
-    return true;
-  }
-  if (msg?.type === "close-tab" && msg.tabId) {
-    chrome.tabs.remove(msg.tabId)
-      .then(() => {
-        addLog("Закрытие вкладки", `Вкладка [ID: ${msg.tabId}] закрыта через список в попапе`);
-        sendResponse({ ok: true });
-      })
-      .catch(() => sendResponse({ ok: false }));
-    return true;
-  }
-  if (msg?.type === "close-old-tabs" && msg.minutes) {
-    closeOldTabs(msg.minutes).then((closed) => sendResponse({ closed }));
-    return true;
-  }
-  if (msg?.type === "get-stats") {
-    chrome.tabs.query({}).then((tabs) => sendResponse({
-      total: tabs.length,
-      discarded: tabs.filter((t) => t.discarded).length
-    }));
-    return true;
-  }
-  if (msg?.type === "get-tab-list") {
-    (async () => {
-      await initTabs();
-      const tabs = await chrome.tabs.query({});
-      const settings = await getSettings();
-      const frozenMap = await getFrozenAtMap();
-      const t = now();
-      const list = tabs
-        .map((tab) => {
-          const whitelisted = isWhitelisted(tab.url || "", settings.whitelist);
-          const fTime = frozenMap[tab.id] || 0;
-          const idleMs = getTabIdleMs(tab, t);
-          const entry = {
-            id: tab.id,
-            title: tab.title || tab.url || "Вкладка",
-            url: tab.url || "",
-            favIconUrl: tab.favIconUrl || "",
-            discarded: !!tab.discarded,
-            active: !!tab.active,
-            pinned: !!tab.pinned,
-            audible: !!tab.audible,
-            system: isSystemPage(tab.url),
-            immunePinned: settings.excludePinned && !!tab.pinned,
-            immuneAudio: settings.excludeAudio && !!tab.audible,
-            immuneWhitelist: whitelisted,
-            idleMs: idleMs,
-            frozenMs: (tab.discarded && fTime) ? Math.max(0, t - fTime) : 0
-          };
-          entry.category = getTabCategory(entry);
-          return entry;
-        })
-        .sort((a, b) => {
-          const rankDiff = CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category];
-          if (rankDiff !== 0) return rankDiff;
-          if (b.idleMs !== a.idleMs) return b.idleMs - a.idleMs;
-          return a.title.localeCompare(b.title, "ru");
-        });
-      sendResponse({ tabs: list });
-    })();
-    return true;
-  }
-  if (msg?.type === "save-settings") {
-    saveSettingsInternal(msg.settings)
-      .then(() => {
-        addLog("Настройки", "Настройки расширения сохранены / обновлены");
-        sendResponse({ ok: true });
-      })
-      .catch(() => sendResponse({ ok: false }));
-    return true;
-  }
-  if (msg?.type === "get-settings") {
-    getSettings().then((settings) => sendResponse(settings));
-    return true;
-  }
+// === СЛУШАТЕЛИ ===
+chrome.runtime.onInstalled.addListener(async () => {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: "open-dashboard", title: "❄️ Открыть панель управления", contexts: ["action"] });
+  });
+  await ensureSettings();
+  await ensureAlarm();
+  await runFreezeCheck("onInstalled");
 });
 
-initTabs();
-chrome.runtime.onInstalled.addListener(initTabs);
-chrome.runtime.onStartup.addListener(initTabs);
+chrome.runtime.onStartup.addListener(async () => {
+  await ensureSettings();
+  await ensureAlarm();
+  await runFreezeCheck("onStartup");
+});
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === ALARM_NAME) await runFreezeCheck("alarm");
+});
+
+chrome.contextMenus.onClicked.addListener((info) => {
+  if (info.menuItemId === "open-dashboard") openDashboard();
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  (async () => {
+    await ensureSettings();
+    const data = await chrome.storage.local.get(["settings", "savedTabs", "logs", "totalFrozen", "tempExemptions"]);
+    const settings = data.settings || DEFAULT_SETTINGS;
+    const savedTabs = data.savedTabs || [];
+    const totalFrozen = data.totalFrozen || 0;
+
+    switch (message.type) {
+      case "get-stats": {
+        const allTabs = await chrome.tabs.query({});
+        sendResponse({ total: allTabs.length, discarded: allTabs.filter(t => t.discarded).length, saved: savedTabs.length, totalFrozen });
+        break;
+      }
+      case "get-tab-list": {
+        const allTabs = await chrome.tabs.query({});
+        sendResponse({ tabs: allTabs });
+        break;
+      }
+      case "close-tab": {
+        if (message.tabId) { await chrome.tabs.remove(message.tabId); addLog("Закрытие вкладки", `ID: ${message.tabId}`); }
+        sendResponse({ ok: true });
+        break;
+      }
+      case "activate-tab": {
+        if (message.tabId) {
+          await chrome.tabs.update(message.tabId, { active: true });
+          if (message.windowId) await chrome.windows.update(message.windowId, { focused: true });
+        }
+        sendResponse({ ok: true });
+        break;
+      }
+      case "freeze-now": {
+        await runFreezeCheck("manual");
+        sendResponse({ frozen: 1 });
+        break;
+      }
+      case "get-saved-frozen-tabs": sendResponse({ tabs: savedTabs }); break;
+      case "open-saved-frozen-tab": {
+        const target = savedTabs.find(t => t.id === message.id);
+        if (target) {
+          await chrome.tabs.create({ url: target.url });
+          await chrome.storage.local.set({ savedTabs: savedTabs.filter(t => t.id !== message.id) });
+          addLog("Восстановление", `Открыта: ${target.title}`);
+        }
+        sendResponse({ ok: true });
+        break;
+      }
+      case "delete-saved-frozen-tab": {
+        await chrome.storage.local.set({ savedTabs: savedTabs.filter(t => t.id !== message.id) });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "clear-saved-frozen-tabs": {
+        await chrome.storage.local.set({ savedTabs: [] });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "get-settings": sendResponse(settings); break;
+      case "save-settings": {
+        const merged = { ...settings, ...message.settings };
+        if (Array.isArray(merged.whitelist)) {
+          const seen = new Set();
+          merged.whitelist = merged.whitelist.map(normalizeDomain).filter(d => d && !seen.has(d) && (seen.add(d), true));
+        }
+        await chrome.storage.local.set({ settings: merged });
+        addLog("Настройки", "Изменены");
+        sendResponse({ ok: true });
+        break;
+      }
+      case "get-logs": sendResponse({ logs: data.logs || [] }); break;
+      case "clear-logs": {
+        await chrome.storage.local.set({ logs: [] });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "open-dashboard": {
+        await openDashboard();
+        sendResponse({ ok: true });
+        break;
+      }
+      case "add-temp-exemption": {
+        const { domain, durationMinutes } = message;
+        if (!domain || !durationMinutes) { sendResponse({ error: "Missing data" }); break; }
+        const exemptions = await getTempExemptions();
+        const expiry = Date.now() + durationMinutes * 60 * 1000;
+        await setTempExemptions([...exemptions.filter(e => e.domain !== domain), { domain, expiry }]);
+        addLog("Временное исключение", `${domain} на ${durationMinutes} мин.`);
+        sendResponse({ ok: true });
+        break;
+      }
+      case "remove-temp-exemption": {
+        const { domain } = message;
+        const exemptions = await getTempExemptions();
+        await setTempExemptions(exemptions.filter(e => e.domain !== domain));
+        sendResponse({ ok: true });
+        break;
+      }
+      case "get-temp-exemptions": {
+        const exemptions = await getTempExemptions();
+        const now = Date.now();
+        const active = exemptions.filter(e => e.expiry > now);
+        if (active.length !== exemptions.length) await setTempExemptions(active);
+        sendResponse({ exemptions: active });
+        break;
+      }
+      default: sendResponse({ error: "Unknown message type" });
+    }
+  })();
+  return true;
+});
