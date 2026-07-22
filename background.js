@@ -4,6 +4,7 @@ import { ALARM_NAME, runFreezeCheck } from "./bg/freeze.js";
 import { openDashboard } from "./bg/open-dashboard.js";
 import { setupMessageListener } from "./bg/messages.js";
 import { updateAudioCache, removeFromAudioCache } from "./bg/audio-cache.js";
+import { initActivityTracking } from "./bg/activity.js";
 
 async function ensureAlarm() {
   try {
@@ -51,7 +52,7 @@ function registerListeners() {
   // Регистрируем обработчик сообщений
   setupMessageListener();
 
-  // 🆕 Долгоживущее соединение для dashboard, чтобы service worker не засыпал
+  // Долгоживущее соединение для dashboard
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name === "dashboard") {
       console.log("Dashboard connected");
@@ -59,7 +60,7 @@ function registerListeners() {
     }
   });
 
-  // ---- Аудио-кеш: отслеживаем изменения статуса audible ----
+  // Аудио-кеш
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.audible !== undefined) {
       updateAudioCache(tabId, changeInfo.audible);
@@ -75,6 +76,7 @@ function registerListeners() {
 (async function init() {
   console.log("Service worker started");
   registerListeners();
+  initActivityTracking();        // 🆕 отслеживание активности
   await ensureSettings();
   await ensureAlarm();
   runFreezeCheck("worker-startup").catch(console.error);
