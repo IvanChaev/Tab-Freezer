@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Tab Freezer — Менеджер вкладок",
-  "version": "2.0.1",
+  "version": "3.0.0",
   "description": "Умная заморозка неактивных вкладок и освобождение оперативной памяти.",
   "permissions": [
     "tabs",
     "storage",
+    "unlimitedStorage",
     "alarms",
     "contextMenus"
   ],
@@ -13,7 +14,8 @@
     "<all_urls>"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "action": {
     "default_popup": "popup.html",

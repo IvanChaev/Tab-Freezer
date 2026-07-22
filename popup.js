@@ -1,70 +1,66 @@
+import { normalizeDomain } from "./shared.js";
+
 document.addEventListener("DOMContentLoaded", () => {
   const versionEl = document.getElementById("popupVersion");
   if (versionEl) {
     try {
       versionEl.textContent = "v" + chrome.runtime.getManifest().version;
-    } catch (e) {
+    } catch {
       versionEl.textContent = "";
     }
   }
 
-  // Функция нормализации домена (аналог background.js)
-  function normalizeDomain(input) {
-    if (typeof input !== "string") return "";
-    let d = input.trim().toLowerCase();
-    d = d.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
-    d = d.split("/")[0].split("?")[0].split("#")[0].split(":")[0];
-    d = d.replace(/^\.+/, "").replace(/\.+$/, "");
-    if (d.startsWith("*.")) d = d.slice(2);
-    if (d.startsWith("www.")) d = d.slice(4);
-    return d;
-  }
-
+  // ---- Статистика напрямую (быстро, даже если service worker спит) ----
   async function loadPopupStats() {
     try {
-      const [statsRes, savedRes] = await Promise.all([
-        chrome.runtime.sendMessage({ type: "get-stats" }),
-        chrome.runtime.sendMessage({ type: "get-saved-frozen-tabs" })
+      const [tabs, storage] = await Promise.all([
+        chrome.tabs.query({}),
+        chrome.storage.local.get(["savedTabs", "totalFrozen"])
       ]);
-      const savedCount = savedRes?.tabs?.length || 0;
+      const total = tabs.length;
+      const discarded = tabs.filter(t => t.discarded).length;
+      const saved = (storage.savedTabs || []).length;
 
-      if (statsRes) {
-        document.getElementById('popupStats').innerHTML =
-          `Всего вкладок: <span>${statsRes.total}</span><br>` +
-          `Выгружено в память: <span>${statsRes.discarded}</span><br>` +
-          `В списке «Замороженные»: <span>${savedCount}</span>`;
-      }
+      const statsEl = document.getElementById('popupStats');
+      statsEl.innerHTML =
+        `Всего вкладок: <span>${total}</span><br>` +
+        `Выгружено в память: <span>${discarded}</span><br>` +
+        `В списке «Замороженные»: <span>${saved}</span>`;
     } catch (e) {
       console.error("Ошибка загрузки статистики:", e);
       document.getElementById('popupStats').textContent = 'Ошибка загрузки';
     }
   }
 
-  // ---- Управление временным исключением для текущего домена ----
+  // ---- Временное исключение (с таймаутом, чтобы не висеть) ----
   async function updateTempStatus() {
+    const statusEl = document.getElementById('tempStatus');
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab || !tab.url) {
-        document.getElementById('tempStatus').textContent = "Не удалось определить сайт";
+        statusEl.textContent = "Не удалось определить сайт";
         return;
       }
       let hostname;
       try {
         hostname = new URL(tab.url).hostname;
       } catch {
-        document.getElementById('tempStatus').textContent = "Некорректный URL";
+        statusEl.textContent = "Некорректный URL";
         return;
       }
       const domain = normalizeDomain(hostname);
       if (!domain) {
-        document.getElementById('tempStatus').textContent = "Не удалось определить домен";
+        statusEl.textContent = "Не удалось определить домен";
         return;
       }
 
-      const res = await chrome.runtime.sendMessage({ type: "get-temp-exemptions" });
+      // Запрос с таймаутом 3 секунды
+      const res = await Promise.race([
+        chrome.runtime.sendMessage({ type: "get-temp-exemptions" }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 3000))
+      ]);
       const exemptions = res.exemptions || [];
       const found = exemptions.find(e => e.domain === domain);
-      const statusEl = document.getElementById('tempStatus');
 
       if (found) {
         const remaining = Math.max(0, Math.round((found.expiry - Date.now()) / 60000));
@@ -80,11 +76,10 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (e) {
       console.error("Ошибка обновления статуса:", e);
-      document.getElementById('tempStatus').textContent = "Ошибка загрузки статуса";
+      statusEl.textContent = "⚠️ Не удалось загрузить статус исключений";
     }
   }
 
-  // Добавление временного исключения
   document.getElementById('addTempExemptionBtn').addEventListener('click', async () => {
     const duration = parseInt(document.getElementById('tempDuration').value, 10);
     if (!duration || duration <= 0) return;
@@ -108,10 +103,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     try {
-      await chrome.runtime.sendMessage({ 
-        type: "add-temp-exemption", 
-        domain, 
-        durationMinutes: duration 
+      await chrome.runtime.sendMessage({
+        type: "add-temp-exemption",
+        domain,
+        durationMinutes: duration
       });
       updateTempStatus();
       loadPopupStats();
@@ -121,7 +116,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // ---- Кнопка заморозки ----
+  // ---- Заморозка (через background) ----
   const freezeBtn = document.getElementById('freezePopupBtn');
   freezeBtn.addEventListener('click', async () => {
     freezeBtn.disabled = true;
@@ -138,13 +133,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // ---- Открытие панели управления ----
-  document.getElementById('openDashboardLink').addEventListener('click', (e) => {
+  // ---- Кнопка "Панель управления" ----
+  document.getElementById('openDashboardLink').addEventListener('click', async (e) => {
     e.preventDefault();
-    chrome.runtime.sendMessage({ type: "open-dashboard" });
+    await chrome.runtime.sendMessage({ type: "open-dashboard" });
+    window.close();
   });
 
-  // ---- Инициализация ----
+  // ---- Запуск ----
   loadPopupStats();
   updateTempStatus();
 });
