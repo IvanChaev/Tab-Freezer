@@ -5,10 +5,10 @@ import { ensureSettings, persistSavedTabs, withStorageLock, addLog } from "./sto
 import { getTempExemptions, setTempExemptions } from "./temp.js";
 import { runFreezeCheck } from "./freeze.js";
 import { openDashboard } from "./open-dashboard.js";
+import { getLastActiveTime } from "./activity.js";
 
 export function setupMessageListener() {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // 🔥 get-stats обрабатываем отдельно, без блокировки, для максимальной скорости
     if (message.type === "get-stats") {
       (async () => {
         try {
@@ -27,7 +27,6 @@ export function setupMessageListener() {
       return true;
     }
 
-    // Все остальные сообщения проходят через общий обработчик
     handleMessage(message).then(sendResponse).catch(err => {
       console.error("Message handler error:", err);
       sendResponse({ error: err?.message || String(err) });
@@ -44,12 +43,17 @@ async function handleMessage(message) {
   const totalFrozen = data.totalFrozen || 0;
 
   switch (message.type) {
-    // 🆕 Быстрый ответ для проверки доступности воркера
     case "ping":
       return { ok: true };
 
-    case "get-tab-list":
-      return { tabs: await chrome.tabs.query({}) };
+    case "get-tab-list": {
+      const tabs = await chrome.tabs.query({});
+      const enriched = tabs.map(tab => ({
+        ...tab,
+        lastActiveTime: getLastActiveTime(tab)
+      }));
+      return { tabs: enriched };
+    }
 
     case "close-tab":
       return await handleCloseTab(message);
