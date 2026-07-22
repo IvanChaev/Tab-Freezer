@@ -3,10 +3,6 @@
 
 import { isSystemUrl, formatDuration } from "./dom.js";
 
-/**
- * Снимок ссылок на часто используемые DOM-узлы. Удобно собирать в одном месте,
- * чтобы каждый модуль не искал getElementById заново.
- */
 export function collectElements() {
   return {
     tabs: document.querySelectorAll('.nav-tab'),
@@ -29,7 +25,6 @@ export function collectElements() {
     totalFrozenCount: document.getElementById('totalFrozenCount'),
     totalSavedMemory: document.getElementById('totalSavedMemory'),
     tempExemptionList: document.getElementById('tempExemptionList'),
-    // 🆕 новые элементы
     fullFreezeSystemPages: document.getElementById('fullFreezeSystemPages'),
     systemFreezeListEditor: document.getElementById('systemFreezeListEditor')
   };
@@ -42,9 +37,7 @@ export function createState(el) {
     openTabsCache: [],
     currentSortSaved: 'real',
     currentSortTabs: 'real',
-    /** {Map<id, { badge, tab }>} — для живого пересчёта таймеров раз в секунду */
     tabTimerRefs: new Map(),
-    /** {Map<id, { badge, closedAt, isSystem }>} — то же для "Замороженных" */
     savedTimerRefs: new Map()
   };
 }
@@ -83,22 +76,22 @@ export function sortOpenTabs(tabs, mode) {
       if (!a.active && b.active) return 1;
       if (!a.discarded && b.discarded) return -1;
       if (a.discarded && !b.discarded) return 1;
-      const aTime = a.active ? 0 : (now - (a.lastAccessed || now));
-      const bTime = b.active ? 0 : (now - (b.lastAccessed || now));
+      // 🆕 используем lastActiveTime (с fallback на lastAccessed)
+      const aTime = a.active ? 0 : (now - (a.lastActiveTime || a.lastAccessed || now));
+      const bTime = b.active ? 0 : (now - (b.lastActiveTime || b.lastAccessed || now));
       return aTime - bTime;
     });
   }
   return list;
 }
 
-// 🔥 ИЗМЕНЕНИЕ: теперь для системных вкладок добавляем "Системная " перед таймером
 export function updateTabBadge(badge, tab, now) {
   if (tab.active) {
     badge.textContent = "● Активна";
     return;
   }
-  const last = typeof tab.lastAccessed === "number" ? tab.lastAccessed : now;
-  const timeText = formatDuration(now - last);
+  const lastActive = typeof tab.lastActiveTime === "number" ? tab.lastActiveTime : (tab.lastAccessed || now);
+  const timeText = formatDuration(now - lastActive);
   const isSys = isSystemUrl(tab.url);
   const prefix = isSys ? "Системная " : "";
   const statusIcon = tab.discarded ? "❄" : "⏱";
