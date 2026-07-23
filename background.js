@@ -4,7 +4,7 @@ import { ALARM_NAME, runFreezeCheck } from "./bg/freeze.js";
 import { openDashboard } from "./bg/open-dashboard.js";
 import { setupMessageListener } from "./bg/messages.js";
 import { updateAudioCache, removeFromAudioCache } from "./bg/audio-cache.js";
-import { initActivityTracking } from "./bg/activity.js";
+import { initActivityTracking, resetDeactivationTimes } from "./bg/activity.js";
 
 async function ensureAlarm() {
   try {
@@ -36,31 +36,25 @@ function registerListeners() {
   });
 
   chrome.runtime.onStartup.addListener(async () => {
+    await resetDeactivationTimes();
     await ensureSettings();
     await ensureAlarm();
     await runFreezeCheck("onStartup");
   });
 
   chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name === ALARM_NAME) await runFreezeCheck("alarm");
+    if (alarm.name === ALARM_NAME) {
+      await ensureSettings();
+      await runFreezeCheck("alarm");
+    }
   });
 
   chrome.contextMenus.onClicked.addListener((info) => {
     if (info.menuItemId === "open-dashboard") openDashboard();
   });
 
-  // Регистрируем обработчик сообщений
   setupMessageListener();
 
-  // Долгоживущее соединение для dashboard
-  chrome.runtime.onConnect.addListener((port) => {
-    if (port.name === "dashboard") {
-      console.log("Dashboard connected");
-      port.onDisconnect.addListener(() => console.log("Dashboard disconnected"));
-    }
-  });
-
-  // Аудио-кеш
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.audible !== undefined) {
       updateAudioCache(tabId, changeInfo.audible);
@@ -76,8 +70,17 @@ function registerListeners() {
 (async function init() {
   console.log("Service worker started");
   registerListeners();
-  initActivityTracking();        // 🆕 отслеживание активности
+
+  // Дожидаемся завершения восстановления карты активности, чтобы
+  // следующие вызовы (ensureSettings, runFreezeCheck) работали с актуальными данными.
+  await initActivityTracking({ restore: true });
+
   await ensureSettings();
   await ensureAlarm();
-  runFreezeCheck("worker-startup").catch(console.error);
+
+  try {
+    await runFreezeCheck("worker-startup");
+  } catch (e) {
+    console.error("Ошибка стартовой проверки:", e);
+  }
 })();
