@@ -76,7 +76,6 @@ export function sortOpenTabs(tabs, mode) {
       if (!a.active && b.active) return 1;
       if (!a.discarded && b.discarded) return -1;
       if (a.discarded && !b.discarded) return 1;
-      // 🆕 используем lastActiveTime (с fallback на lastAccessed)
       const aTime = a.active ? 0 : (now - (a.lastActiveTime || a.lastAccessed || now));
       const bTime = b.active ? 0 : (now - (b.lastActiveTime || b.lastAccessed || now));
       return aTime - bTime;
@@ -86,11 +85,25 @@ export function sortOpenTabs(tabs, mode) {
 }
 
 export function updateTabBadge(badge, tab, now) {
+  // ✅ Если вкладка помечена как активная в данных — показываем "Активна"
   if (tab.active) {
     badge.textContent = "● Активна";
     return;
   }
-  const lastActive = typeof tab.lastActiveTime === "number" ? tab.lastActiveTime : (tab.lastAccessed || now);
+
+  const lastActive = typeof tab.lastActiveTime === "number"
+    ? tab.lastActiveTime
+    : (tab.lastAccessed || now);
+
+  // ✅ Защита от stale-кэша: если lastActiveTime практически равен текущему
+  // времени (вкладка только что стала активной, но кэш ещё не обновился через
+  // refreshTabList), показываем "Активна" вместо тикающего счётчика.
+  // Порог 1500 мс покрывает задержку между onActivated и следующим обновлением кэша.
+  if (now - lastActive < 1500) {
+    badge.textContent = "● Активна";
+    return;
+  }
+
   const timeText = formatDuration(now - lastActive);
   const isSys = isSystemUrl(tab.url);
   const prefix = isSys ? "Системная " : "";

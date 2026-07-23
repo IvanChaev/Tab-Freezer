@@ -1,6 +1,4 @@
-// ui/timers.js — два периодических таймера, пока страница открыта:
-//   1) раз в секунду — пересчитать таймеры "как давно" в активной панели;
-//   2) раз в 5 секунд — обновить статистику и бейджи-счётчики.
+// ui/timers.js — исправленная функция tickTimers
 
 import { formatDuration } from "./dom.js";
 import { updateTabBadge } from "./state.js";
@@ -8,47 +6,68 @@ import { updateTabBadge } from "./state.js";
 export function initTimers(state) {
   const { el } = state;
 
-  // Обёртка: выполняем действие только если страница видима
   function updateIfVisible(callback) {
     if (document.visibilityState === 'visible') {
       callback();
     }
   }
 
-  // ---- Функция обновления только бейджей-счётчиков (без перерисовки списков) ----
   async function updateBadgeCounts() {
     try {
-      // Получаем количество сохранённых
       const savedRes = await chrome.runtime.sendMessage({ type: "get-saved-frozen-tabs" });
       if (savedRes && el.countSaved) {
         el.countSaved.textContent = savedRes.tabs?.length ?? 0;
       }
-      // Получаем количество временных исключений
       const tempRes = await chrome.runtime.sendMessage({ type: "get-temp-exemptions" });
       if (tempRes && el.countTemp) {
         el.countTemp.textContent = tempRes.exemptions?.length ?? 0;
       }
-      // countActive обновляется при перерисовке списка открытых вкладок
     } catch (e) {
       console.error("Ошибка обновления бейджей:", e);
     }
   }
 
-  // ---- Таймер 1: обновление времени в строках (раз в секунду) ----
+  // ✅ ИСПРАВЛЕНИЕ: таймер раз в секунду + принудительное обновление активной вкладки
   const timerInterval = setInterval(() => {
     updateIfVisible(() => {
       const activePane = document.querySelector('.tab-pane.active')?.id;
       if (activePane === 'tab-saved' || activePane === 'tab-list') {
         tickTimers(state);
       }
-      // Для панели временных исключений обновляем оставшееся время (перерисовываем список)
       if (activePane === 'tab-temp-exemptions') {
         state.refreshTempExemptions?.();
       }
     });
   }, 1000);
 
-  // ---- Таймер 2: обновление статистики и бейджей (раз в 5 секунд) ----
+  // ✅ НОВОЕ: раз в 3 секунды обновляем кэш вкладок, чтобы tab.active был актуальным.
+  // Это гарантирует, что если пользователь переключился на вкладку и вернулся,
+  // бейдж перестанет тикать даже без полного перерендера.
+  const cacheRefreshInterval = setInterval(() => {
+    updateIfVisible(async () => {
+      const activePane = document.querySelector('.tab-pane.active')?.id;
+      if (activePane === 'tab-list') {
+        try {
+          const res = await chrome.runtime.sendMessage({ type: "get-tab-list" });
+          if (res?.tabs) {
+            // Обновляем кэш и tabTimerRefs актуальными данными
+            const freshMap = new Map(res.tabs.map(t => [t.id, t]));
+            for (const [tabId, ref] of state.tabTimerRefs) {
+              const freshTab = freshMap.get(tabId);
+              if (freshTab) {
+                ref.tab = freshTab; // ← подменяем на свежий объект
+              }
+            }
+            // Также обновляем основной кэш для сортировки/поиска
+            state.openTabsCache = res.tabs;
+          }
+        } catch (e) {
+          // Тихо игнорируем — SW мог уснуть
+        }
+      }
+    });
+  }, 3000);
+
   const updateInterval = setInterval(() => {
     updateIfVisible(() => {
       state.refreshStats?.();
@@ -56,7 +75,6 @@ export function initTimers(state) {
     });
   }, 5000);
 
-  // ---- Обработчик видимости: при возвращении на страницу обновляем счётчики и статистику ----
   let lastVisibilityUpdate = 0;
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
@@ -65,26 +83,28 @@ export function initTimers(state) {
         lastVisibilityUpdate = now;
         state.refreshStats?.();
         updateBadgeCounts();
+        // ✅ При возврате на страницу — полное обновление списка вкладок
+        state.refreshTabList?.();
+        state.refreshSavedList?.();
+        state.refreshTempExemptions?.();
       }
     }
   });
 
-  // ---- Очистка при закрытии ----
   window.addEventListener('beforeunload', () => {
     clearInterval(timerInterval);
+    clearInterval(cacheRefreshInterval);
     clearInterval(updateInterval);
   });
 }
 
 function tickTimers(state) {
   const now = Date.now();
-  
-  // Обновление таймеров для открытых вкладок
+
   for (const { badge, tab } of state.tabTimerRefs.values()) {
     updateTabBadge(badge, tab, now);
   }
-  
-  // Обновление таймеров для сохранённых вкладок
+
   for (const { badge, closedAt, isSystem } of state.savedTimerRefs.values()) {
     const timeText = formatDuration(now - closedAt);
     badge.textContent = isSystem ? `Системная ❄ ${timeText}` : `❄ ${timeText}`;
