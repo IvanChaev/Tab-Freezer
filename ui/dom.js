@@ -1,18 +1,9 @@
 // ui/dom.js — мелкие DOM-утилиты, общие для разных панелей дашборда.
 
-/**
- * Ссылка на системную страницу (chrome://, about:, само расширение и т.п.)?
- * Такие страницы не трогаем при заморозке и не пытаемся грузить для них favicon.
- */
-export function isSystemUrl(url) {
-  if (!url) return false;
-  return url.startsWith("chrome://") ||
-         url.startsWith("edge://") ||
-         url.startsWith("about:") ||
-         url.startsWith("chrome-extension://") ||
-         url.startsWith("moz-extension://") ||
-         url.startsWith(chrome.runtime.getURL(""));
-}
+import { isSystemUrl } from "../shared.js";
+
+// Реэкспортируем для совместимости с существующими импортами
+export { isSystemUrl };
 
 /**
  * Компактный формат "как давно": секунды/минуты:секунды/часы:мин:сек/дни.

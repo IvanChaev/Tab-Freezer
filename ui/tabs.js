@@ -30,7 +30,8 @@ export function initOpenTabs(state, showToast) {
       });
     }
     const sortedTabs = sortOpenTabs(filtered, state.currentSortTabs);
-    el.countActive.textContent = sortedTabs.length;
+    // ✅ СЧЁТЧИК ТЕПЕРЬ ОТ ОБЩЕГО КЭША, НЕ ЗАВИСИТ ОТ ПОИСКА
+    el.countActive.textContent = state.openTabsCache.length;
     el.tabList.replaceChildren();
     state.tabTimerRefs.clear();
 

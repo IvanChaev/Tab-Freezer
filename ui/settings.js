@@ -9,7 +9,6 @@ export function initSettings(state, showToast) {
     try {
       const settings = await chrome.runtime.sendMessage({ type: "get-settings" });
       console.log("Загружены настройки для отображения:", settings);
-      // FIX: защита от отсутствия элементов
       if (!el.timeout || !el.closeOldMinutes || !el.autoClose || !el.excludePinned || !el.excludeAudio || !el.aggressiveFreeze) {
         console.error("Один или несколько DOM-элементов настроек не найдены!");
         return;
@@ -34,7 +33,6 @@ export function initSettings(state, showToast) {
       }
     } catch (e) {
       console.error("Ошибка загрузки настроек:", e);
-      // FIX: в случае ошибки всё равно установить дефолты, чтобы интерфейс не был пустым
       if (el.timeout && el.closeOldMinutes && el.autoClose && el.excludePinned && el.excludeAudio && el.aggressiveFreeze) {
         el.timeout.value = DEFAULT_SETTINGS.timeoutMinutes;
         el.closeOldMinutes.value = DEFAULT_SETTINGS.closeOldMinutes;
@@ -97,7 +95,9 @@ export function initSettings(state, showToast) {
     }
   }
 
-  // ---- Импорт ----
+  // ---- Импорт ───
+  // ─── ФИКС #2: запись идёт через background (withStorageLock),
+  //      а НЕ напрямую в chrome.storage.local из UI-контекста. ───
   async function importSettings(file) {
     try {
       const text = await file.text();
@@ -105,26 +105,29 @@ export function initSettings(state, showToast) {
       if (!data.settings || typeof data.settings !== 'object') {
         throw new Error('Неверный формат: отсутствуют settings');
       }
-      const mergedSettings = { ...DEFAULT_SETTINGS, ...data.settings };
-      if (!Array.isArray(mergedSettings.whitelist)) {
-        mergedSettings.whitelist = [];
-      }
-      const totalFrozen = typeof data.totalFrozen === 'number' ? data.totalFrozen : 0;
 
       if (!confirm(`Импортировать настройки от ${data.exportedAt || 'неизвестной даты'}? Текущие настройки будут перезаписаны.`)) {
         return;
       }
 
-      await chrome.storage.local.set({
-        settings: mergedSettings,
-        totalFrozen: totalFrozen
+      // Отправляем в background — там запись пройдёт через мьютекс
+      const res = await chrome.runtime.sendMessage({
+        type: "import-settings",
+        settings: data.settings,
+        totalFrozen: data.totalFrozen
       });
 
-      await loadSettings();
-      state.loadWhitelist?.();
-      state.refreshStatsPanel?.();
-      state.refreshStats?.();
-      showToast('Настройки импортированы');
+      if (res?.ok) {
+        // Перечитываем все панели, которые зависят от настроек
+        await loadSettings();
+        state.loadWhitelist?.();
+        state.loadFullFreezeSettings?.();
+        state.refreshStatsPanel?.();
+        state.refreshStats?.();
+        showToast('Настройки импортированы');
+      } else {
+        showToast('Ошибка импорта: ' + (res?.error || 'неизвестная'), true);
+      }
     } catch (e) {
       console.error(e);
       showToast('Ошибка импорта: ' + e.message, true);

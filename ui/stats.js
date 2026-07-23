@@ -23,7 +23,7 @@ export function initStats(state) {
         el.totalFrozenCount.textContent = res.totalFrozen;
         // Грубая оценка: ~50 МБ на каждую "сэкономленную" вкладку.
         const savedMemory = res.totalFrozen * 50;
-        el.totalSavedMemory.textContent = savedMemory;
+        el.totalSavedMemory.textContent = '~' + savedMemory; // ← добавлен знак приблизительности
       }
     } catch (e) {
       console.error("Ошибка загрузки панели статистики:", e);

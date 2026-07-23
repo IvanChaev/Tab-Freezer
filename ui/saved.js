@@ -30,7 +30,8 @@ export function initSavedTabs(state, showToast) {
       });
     }
     const sortedList = sortSavedTabs(filtered, state.currentSortSaved);
-    el.countSaved.textContent = sortedList.length;
+    // ✅ СЧЁТЧИК ТЕПЕРЬ ОТ ПОЛНОГО КЭША, А НЕ ОТ ФИЛЬТРОВАННОГО
+    el.countSaved.textContent = state.savedTabsCache.length;
     el.savedList.replaceChildren();
     state.savedTimerRefs.clear();
 
