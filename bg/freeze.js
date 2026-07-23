@@ -4,7 +4,7 @@ import { DEFAULT_SETTINGS, isSystemUrl } from "../shared.js";
 import { withStorageLock, persistSavedTabs, writeLogUnlocked, incrementTotalFrozenUnlocked } from "./storage.js";
 import { isTempExempted } from "./temp.js";
 import { isTabAudibleWithBuffer } from "./audio-cache.js";
-import { getLastActiveTime, waitForActivityReadiness } from "./activity.js";
+import { getLastActiveTime, waitForActivityReadiness, getCurrentActiveTabId } from "./activity.js";
 
 const ALARM_NAME = "check-tabs";
 export { ALARM_NAME };
@@ -37,9 +37,15 @@ function makeSavedEntry(tab, now) {
 }
 
 async function isEligibleForFreeze(tab, settings) {
+  // ✅ Двойная проверка активности:
+  // tab.active — из chrome.tabs.query (может быть stale при race condition).
+  // getCurrentActiveTabId() — из трекера активности (обновляется через onActivated/onFocusChanged).
   if (tab.active) return false;
+  if (tab.id === getCurrentActiveTabId()) return false;
+
   if (!tab.url) return false;
 
+  // Страницы самого расширения защищены всегда
   if (tab.url.startsWith(chrome.runtime.getURL(""))) return false;
 
   const isSystem = isSystemUrl(tab.url);
@@ -76,11 +82,11 @@ async function isEligibleForFreeze(tab, settings) {
   return true;
 }
 
-// ─── ИСПРАВЛЕНИЕ #1: waitForActivityReadiness ВЫНЕСЕНА за пределы мьютекса ───
+// ─── waitForActivityReadiness ВЫНЕСЕНА за пределы мьютекса ───
 export async function runFreezeCheck(reason = "alarm") {
   await waitForActivityReadiness(); // ← ждём ВНЕ мьютекса (с таймаутом 5 с)
   const frozenCount = await withStorageLock(() => runFreezeCheckInner(reason));
-  
+
   // ✅ Уведомляем панель управления об изменениях, если была заморозка
   if (frozenCount > 0) {
     try {
@@ -89,7 +95,7 @@ export async function runFreezeCheck(reason = "alarm") {
       // Игнорируем ошибку, если панель не открыта
     }
   }
-  
+
   return frozenCount;
 }
 
