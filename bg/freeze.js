@@ -1,15 +1,14 @@
 // bg/freeze.js — основная бизнес-логика "заморозки"
 
 import { DEFAULT_SETTINGS, isSystemUrl } from "../shared.js";
-import { withStorageLock, persistSavedTabs, addLog, incrementTotalFrozenUnlocked } from "./storage.js";
+import { withStorageLock, persistSavedTabs, writeLogUnlocked, incrementTotalFrozenUnlocked } from "./storage.js";
 import { isTempExempted } from "./temp.js";
 import { isTabAudibleWithBuffer } from "./audio-cache.js";
-import { getLastActiveTime } from "./activity.js";
+import { getLastActiveTime, waitForActivityReadiness } from "./activity.js";
 
 const ALARM_NAME = "check-tabs";
 export { ALARM_NAME };
 
-// Защищённые системные страницы, которые нельзя закрывать даже при полной заморозке
 const PROTECTED_SYSTEM_URLS = [
   'chrome://extensions',
   'chrome://settings',
@@ -51,7 +50,7 @@ async function isEligibleForFreeze(tab, settings) {
     }
     if (!settings.fullFreezeSystemPages) return false;
     const allowed = Array.isArray(settings.systemFreezeList) ? settings.systemFreezeList : [];
-    if (allowed.length === 0) return true;
+    if (allowed.length === 0) return false;
     if (!allowed.some(pattern => tab.url.startsWith(pattern))) return false;
     return true;
   }
@@ -77,8 +76,21 @@ async function isEligibleForFreeze(tab, settings) {
   return true;
 }
 
-export function runFreezeCheck(reason = "alarm") {
-  return withStorageLock(() => runFreezeCheckInner(reason));
+// ─── ИСПРАВЛЕНИЕ #1: waitForActivityReadiness ВЫНЕСЕНА за пределы мьютекса ───
+export async function runFreezeCheck(reason = "alarm") {
+  await waitForActivityReadiness(); // ← ждём ВНЕ мьютекса (с таймаутом 5 с)
+  const frozenCount = await withStorageLock(() => runFreezeCheckInner(reason));
+  
+  // ✅ Уведомляем панель управления об изменениях, если была заморозка
+  if (frozenCount > 0) {
+    try {
+      chrome.runtime.sendMessage({ type: "freeze-done" }).catch(() => {});
+    } catch (e) {
+      // Игнорируем ошибку, если панель не открыта
+    }
+  }
+  
+  return frozenCount;
 }
 
 async function runFreezeCheckInner(reason = "alarm") {
@@ -89,8 +101,9 @@ async function runFreezeCheckInner(reason = "alarm") {
     const now = Date.now();
     let savedTabsChanged = false;
 
-    const timeoutMs = (settings.timeoutMinutes || 15) * 60 * 1000;
-    addLog("Проверка", `Причина: ${reason}. Тайм-аут: ${settings.timeoutMinutes} мин. Полная заморозка: ${settings.aggressiveFreeze ? "да" : "нет"}`);
+    const timeoutMs = Math.max(1, settings.timeoutMinutes || 15) * 60 * 1000;
+
+    await writeLogUnlocked("Проверка", `Причина: ${reason}. Тайм-аут: ${settings.timeoutMinutes} мин. Полная заморозка: ${settings.aggressiveFreeze ? "да" : "нет"}`);
 
     if (settings.autoClose && settings.closeOldMinutes > 0) {
       const maxAgeMs = settings.closeOldMinutes * 60 * 1000;
@@ -100,7 +113,7 @@ async function runFreezeCheckInner(reason = "alarm") {
         savedTabs.length = 0;
         savedTabs.push(...filtered);
         savedTabsChanged = true;
-        addLog("Автоочистка", `Удалено устаревших: ${before - filtered.length}`);
+        await writeLogUnlocked("Автоочистка", `Удалено устаревших: ${before - filtered.length}`);
       }
     }
 
@@ -111,43 +124,42 @@ async function runFreezeCheckInner(reason = "alarm") {
       if (!(await isEligibleForFreeze(tab, settings))) continue;
       candidates++;
 
-      // 🆕 используем собственное время последней активности
       const lastActiveTime = getLastActiveTime(tab);
       if ((now - lastActiveTime) > timeoutMs) {
         const isSystem = isSystemUrl(tab.url);
         const useAggressive = isSystem || settings.aggressiveFreeze;
 
         if (useAggressive) {
-          savedTabs.unshift(makeSavedEntry(tab, now));
-          savedTabsChanged = true;
           try {
             await chrome.tabs.remove(tab.id);
+            savedTabs.unshift(makeSavedEntry(tab, now));
+            savedTabsChanged = true;
             frozenThisRun++;
             await incrementTotalFrozenUnlocked();
-            addLog("Полная заморозка", `Закрыта: ${tab.title}`);
+            await writeLogUnlocked("Полная заморозка", `Закрыта: ${tab.title}`);
           } catch (err) {
-            addLog("Ошибка", `Не удалось закрыть ${tab.id}: ${err.message}`);
+            await writeLogUnlocked("Ошибка", `Не удалось закрыть ${tab.id}: ${err.message}`);
           }
         } else {
           try {
             const freshTab = await chrome.tabs.get(tab.id);
             if (freshTab.discarded) {
-              addLog("Заморозка", `Пропущена (уже выгружена ранее): ${tab.title}`);
+              await writeLogUnlocked("Заморозка", `Пропущена (уже выгружена ранее): ${tab.title}`);
             } else {
               await chrome.tabs.discard(tab.id);
               frozenThisRun++;
               await incrementTotalFrozenUnlocked();
-              addLog("Заморозка", `Выгружена: ${tab.title}`);
+              await writeLogUnlocked("Заморозка", `Выгружена: ${tab.title}`);
             }
           } catch (err) {
-            addLog("Ошибка", `Не удалось выгрузить ${tab.id}: ${err.message}`);
+            await writeLogUnlocked("Ошибка", `Не удалось выгрузить ${tab.id}: ${err.message}`);
           }
         }
       }
     }
 
     if (frozenThisRun === 0) {
-      addLog("Проверка", `Кандидатов: ${candidates}, никто не подошёл.`);
+      await writeLogUnlocked("Проверка", `Кандидатов: ${candidates}, никто не подошёл.`);
     }
     if (savedTabsChanged) {
       await persistSavedTabs(savedTabs);
@@ -155,7 +167,7 @@ async function runFreezeCheckInner(reason = "alarm") {
     return frozenThisRun;
   } catch (err) {
     console.error("Freeze check error:", err);
-    addLog("Ошибка", `Сбой: ${err.message}`);
+    await writeLogUnlocked("Ошибка", `Сбой: ${err.message}`);
     return 0;
   }
 }

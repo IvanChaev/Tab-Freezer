@@ -5,8 +5,32 @@ import { DEFAULT_SETTINGS } from "../shared.js";
 
 // === ЗАЩИТА ОТ ГОНКИ (race condition) ===
 let storageMutex = Promise.resolve();
-export function withStorageLock(task) {
-  const run = storageMutex.then(task, task);
+
+/**
+ * Выполняет задачу, захватывая мьютекс. Опциональный таймаут (мс) предотвращает
+ * бесконечную блокировку, если chrome.storage зависает.
+ * Если таймаут истекает, мьютекс освобождается, но сама задача продолжает выполняться.
+ */
+export function withStorageLock(task, timeoutMs = 30000) {
+  const run = storageMutex.then(() => {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`Storage lock timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      task()
+        .then(result => {
+          clearTimeout(timer);
+          resolve(result);
+        })
+        .catch(err => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  });
+
+  // Обновляем цепочку мьютекса: следующий в очереди ждёт завершения (или таймаута) текущей задачи
   storageMutex = run.then(() => {}, () => {});
   return run;
 }
@@ -58,13 +82,9 @@ export async function persistSavedTabs(savedTabs) {
   return [];
 }
 
-// Запись лога БЕЗ захвата мьютекса. Используется:
-//  1) публичной функцией addLog() ниже (оборачивает в withStorageLock);
-//  2) кодом, который уже выполняется ВНУТРИ withStorageLock (например,
-//     ensureSettings) — вызывать оттуда addLog() напрямую НЕЛЬЗЯ, это
-//     приводит к дедлоку мьютекса (повторный withStorageLock изнутри
-//     уже выполняющегося withStorageLock-таска).
-async function writeLogUnlocked(action, details = "") {
+// Запись лога БЕЗ захвата мьютекса.
+// Использовать ТОЛЬКО внутри уже захваченного withStorageLock.
+export async function writeLogUnlocked(action, details = "") {
   try {
     const data = await chrome.storage.local.get("logs");
     const logs = data.logs || [];
@@ -76,11 +96,13 @@ async function writeLogUnlocked(action, details = "") {
   }
 }
 
+// Запись лога С захватом мьютекса.
+// Использовать из кода, который НЕ находится внутри withStorageLock.
 export async function addLog(action, details = "") {
   return withStorageLock(() => writeLogUnlocked(action, details));
 }
 
-async function incrementTotalFrozenUnlocked() {
+export async function incrementTotalFrozenUnlocked() {
   try {
     const data = await chrome.storage.local.get("totalFrozen");
     const total = (data.totalFrozen || 0) + 1;
@@ -91,16 +113,10 @@ async function incrementTotalFrozenUnlocked() {
   }
 }
 
-// ВАЖНО: freeze.js вызывает incrementTotalFrozenUnlocked() напрямую, а не эту
-// функцию — потому что там она выполняется изнутри уже захваченного
-// withStorageLock (внутри runFreezeCheck), и повторный withStorageLock здесь
-// привёл бы к дедлоку.
 export async function incrementTotalFrozen() {
   return withStorageLock(incrementTotalFrozenUnlocked);
 }
-export { incrementTotalFrozenUnlocked };
 
-// FIX: теперь проверяем не только наличие ключей, но и корректность значений
 export async function ensureSettings() {
   return withStorageLock(async () => {
     try {
@@ -112,9 +128,7 @@ export async function ensureSettings() {
         settings = { ...DEFAULT_SETTINGS };
         changed = true;
       } else {
-        // Проверяем все ключи DEFAULT_SETTINGS
         for (const key of Object.keys(DEFAULT_SETTINGS)) {
-          // FIX: перезаписываем, если ключа нет, или значение null/undefined, или неверный тип
           const defaultValue = DEFAULT_SETTINGS[key];
           const currentValue = settings[key];
           let shouldReplace = false;
@@ -122,8 +136,7 @@ export async function ensureSettings() {
           if (!(key in settings) || currentValue === null || currentValue === undefined) {
             shouldReplace = true;
           } else {
-            // Проверка типов
-            if (typeof defaultValue === 'number' && (typeof currentValue !== 'number' || isNaN(currentValue) || currentValue < 0)) {
+            if (typeof defaultValue === 'number' && (typeof currentValue !== 'number' || isNaN(currentValue) || currentValue < 1)) {
               shouldReplace = true;
             } else if (typeof defaultValue === 'boolean' && typeof currentValue !== 'boolean') {
               shouldReplace = true;

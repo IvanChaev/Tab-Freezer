@@ -9,10 +9,12 @@ async function getTempExemptions() {
   return data.tempExemptions || [];
 }
 
-async function setTempExemptionsUnlocked(exemptions) {
+// Версия БЕЗ мьютекса — только для использования внутри уже захваченного withStorageLock
+export async function setTempExemptionsUnlocked(exemptions) {
   await chrome.storage.local.set({ tempExemptions: exemptions });
 }
 
+// Версия С мьютексом — для использования извне
 async function setTempExemptions(exemptions) {
   return withStorageLock(() => setTempExemptionsUnlocked(exemptions));
 }

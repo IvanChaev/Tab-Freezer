@@ -1,11 +1,38 @@
 // bg/messages.js — единый роутер chrome.runtime.onMessage
 
 import { DEFAULT_SETTINGS, normalizeDomain, SETTINGS_KEYS, pickSettings } from "../shared.js";
-import { ensureSettings, persistSavedTabs, withStorageLock, addLog } from "./storage.js";
+import { ensureSettings, persistSavedTabs, withStorageLock, writeLogUnlocked, addLog } from "./storage.js";
 import { getTempExemptions, setTempExemptions } from "./temp.js";
 import { runFreezeCheck } from "./freeze.js";
 import { openDashboard } from "./open-dashboard.js";
-import { getLastActiveTime } from "./activity.js";
+import { getLastActiveTime, waitForActivityReadiness } from "./activity.js";
+
+// ─── Кэш ensureSettings с защитой от двойного запуска ───
+let lastEnsureTime = 0;
+const ENSURE_CACHE_MS = 10_000; // 10 секунд
+let ensureSettingsPromise = null;
+
+async function ensureSettingsCached() {
+  const now = Date.now();
+  if (now - lastEnsureTime > ENSURE_CACHE_MS) {
+    // Запускаем обновление, только если ещё не запущено
+    if (!ensureSettingsPromise) {
+      ensureSettingsPromise = ensureSettings().finally(() => {
+        ensureSettingsPromise = null;
+      });
+      try {
+        await ensureSettingsPromise;
+        lastEnsureTime = Date.now(); // обновляем время после успешного завершения
+      } catch (e) {
+        console.error("ensureSettings failed in cache:", e);
+        // не обновляем lastEnsureTime, чтобы при следующем запросе попытаться снова
+      }
+    } else {
+      // Ждём завершения уже запущенного обновления
+      await ensureSettingsPromise;
+    }
+  }
+}
 
 export function setupMessageListener() {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -36,7 +63,8 @@ export function setupMessageListener() {
 }
 
 async function handleMessage(message) {
-  await ensureSettings();
+  await ensureSettingsCached();
+
   const data = await chrome.storage.local.get(["settings", "savedTabs", "logs", "totalFrozen", "tempExemptions"]);
   const settings = data.settings || DEFAULT_SETTINGS;
   const savedTabs = data.savedTabs || [];
@@ -47,6 +75,7 @@ async function handleMessage(message) {
       return { ok: true };
 
     case "get-tab-list": {
+      await waitForActivityReadiness();
       const tabs = await chrome.tabs.query({});
       const enriched = tabs.map(tab => ({
         ...tab,
@@ -83,6 +112,9 @@ async function handleMessage(message) {
 
     case "save-settings":
       return await handleSaveSettings(settings, message.settings);
+
+    case "import-settings":
+      return await handleImportSettings(message);
 
     case "get-logs":
       return { logs: data.logs || [] };
@@ -122,7 +154,7 @@ async function handleMessage(message) {
 async function handleCloseTab(message) {
   if (message.tabId) {
     await chrome.tabs.remove(message.tabId);
-    addLog("Закрытие вкладки", `ID: ${message.tabId}`);
+    await addLog("Закрытие вкладки", `ID: ${message.tabId}`);
   }
   return { ok: true };
 }
@@ -145,7 +177,7 @@ async function handleOpenSavedTab(message) {
       const list = cur.savedTabs || [];
       await persistSavedTabs(list.filter(t => t.id !== message.id));
     });
-    addLog("Восстановление", `Открыта: ${target.title}`);
+    await addLog("Восстановление", `Открыта: ${target.title}`);
   }
   return { ok: true };
 }
@@ -199,35 +231,98 @@ async function handleSaveSettings(currentSettings, incoming) {
     }
     
     await chrome.storage.local.set({ settings: merged });
-    addLog("Настройки", "Изменены");
+    await writeLogUnlocked("Настройки", "Изменены");
     return { ok: true };
   });
 }
 
+async function handleImportSettings(message) {
+  return withStorageLock(async () => {
+    try {
+      const incoming = message.settings;
+      if (!incoming || typeof incoming !== 'object') {
+        return { error: "Неверный формат: отсутствуют settings" };
+      }
+
+      const merged = { ...DEFAULT_SETTINGS, ...incoming };
+
+      for (const key of ['timeoutMinutes', 'closeOldMinutes']) {
+        const val = parseInt(merged[key], 10);
+        merged[key] = (isNaN(val) || val < 1) ? DEFAULT_SETTINGS[key] : val;
+      }
+
+      for (const key of ['autoClose', 'excludePinned', 'excludeAudio', 'aggressiveFreeze', 'fullFreezeSystemPages']) {
+        merged[key] = !!merged[key];
+      }
+
+      if (!Array.isArray(merged.whitelist)) merged.whitelist = [];
+      else {
+        const seen = new Set();
+        merged.whitelist = merged.whitelist
+          .map(normalizeDomain)
+          .filter(d => d && !seen.has(d) && (seen.add(d), true));
+      }
+
+      if (!Array.isArray(merged.systemFreezeList)) {
+        merged.systemFreezeList = [];
+      } else {
+        merged.systemFreezeList = merged.systemFreezeList
+          .map(s => String(s).trim())
+          .filter(Boolean);
+      }
+
+      const totalFrozen = typeof message.totalFrozen === 'number'
+        ? Math.max(0, Math.floor(message.totalFrozen))
+        : 0;
+
+      await chrome.storage.local.set({
+        settings: merged,
+        totalFrozen
+      });
+      await writeLogUnlocked("Импорт", "Настройки импортированы из JSON");
+      return { ok: true };
+    } catch (e) {
+      console.error("handleImportSettings error:", e);
+      return { error: e.message || String(e) };
+    }
+  });
+}
+
+// ─── Атомарное добавление/удаление временных исключений ───
 async function handleAddTempExemption(message) {
   const { domain, durationMinutes } = message;
   if (!domain || !durationMinutes) return { error: "Missing data" };
-  const exemptions = await getTempExemptions();
-  const expiry = Date.now() + durationMinutes * 60 * 1000;
-  await setTempExemptions([
-    ...exemptions.filter(e => e.domain !== domain),
-    { domain, expiry }
-  ]);
-  addLog("Временное исключение", `${domain} на ${durationMinutes} мин.`);
-  return { ok: true };
+  
+  return withStorageLock(async () => {
+    const exemptions = await getTempExemptions();
+    const expiry = Date.now() + durationMinutes * 60 * 1000;
+    const updated = [
+      ...exemptions.filter(e => e.domain !== domain),
+      { domain, expiry }
+    ];
+    await chrome.storage.local.set({ tempExemptions: updated });
+    await writeLogUnlocked("Временное исключение", `${domain} на ${durationMinutes} мин.`);
+    return { ok: true };
+  });
 }
 
 async function handleRemoveTempExemption(message) {
   const { domain } = message;
-  const exemptions = await getTempExemptions();
-  await setTempExemptions(exemptions.filter(e => e.domain !== domain));
-  return { ok: true };
+  return withStorageLock(async () => {
+    const exemptions = await getTempExemptions();
+    const updated = exemptions.filter(e => e.domain !== domain);
+    await chrome.storage.local.set({ tempExemptions: updated });
+    await writeLogUnlocked("Временное исключение", `Удалено: ${domain}`);
+    return { ok: true };
+  });
 }
 
 async function handleGetTempExemptions() {
   const exemptions = await getTempExemptions();
   const now = Date.now();
   const active = exemptions.filter(e => e.expiry > now);
-  if (active.length !== exemptions.length) await setTempExemptions(active);
+  if (active.length !== exemptions.length) {
+    await setTempExemptions(active);
+  }
   return { exemptions: active };
 }
