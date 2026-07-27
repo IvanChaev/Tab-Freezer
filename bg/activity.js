@@ -29,14 +29,9 @@ function createReadinessPromise() {
 
 const READINESS_TIMEOUT_MS = 5000;
 
-// ✅ ИСПРАВЛЕНИЕ: убран преждевременный readinessResolve().
-// Если readinessPromise ещё не создан (initActivityTracking не вызывалась),
-// создаём его, но НЕ резолвим — пусть таймаут защитит от вечного ожидания.
 export function waitForActivityReadiness(timeoutMs = READINESS_TIMEOUT_MS) {
   if (!readinessPromise) {
     createReadinessPromise();
-    // НЕ вызываем readinessResolve() здесь!
-    // Резолв произойдёт только после реального завершения restore + syncActiveTab.
   }
   let timeoutId;
   const timeoutPromise = new Promise(resolve => {
@@ -72,8 +67,11 @@ function cancelDebouncedPersist() {
   }
 }
 
+// 🔥 ИЗМЕНЕНИЕ: теперь сохраняем и currentActiveTabId
 async function _persistDeactivationTimesUnlocked() {
-  const obj = {};
+  const obj = {
+    currentActiveTabId: currentActiveTabId  // сохраняем ID активной вкладки
+  };
   for (const [id, time] of lastDeactivationTimes) {
     obj[id] = time;
   }
@@ -84,9 +82,7 @@ async function persistDeactivationTimes() {
   return withStorageLock(() => _persistDeactivationTimesUnlocked());
 }
 
-// ✅ ГЛАВНОЕ ИСПРАВЛЕНИЕ: merge вместо clear+overwrite.
-// Live-данные (выставленные onActivated/onCreated/onFocusChanged во время
-// асинхронного чтения storage) НИКОГДА не перезаписываются stale-снэпшотом.
+// 🔥 ИЗМЕНЕНИЕ: восстановление currentActiveTabId из хранилища
 async function restoreDeactivationTimes() {
   return withStorageLock(async () => {
     if (abortRestore) {
@@ -99,8 +95,24 @@ async function restoreDeactivationTimes() {
     const now = Date.now();
     const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-    // Узнаём, какие вкладки СЕЙЧАС реально активны (во ВСЕХ окнах),
-    // чтобы никогда не восстановить для них устаревшую метку.
+    // Восстанавливаем активную вкладку из хранилища
+    const savedActiveTabId = obj.currentActiveTabId ?? null;
+    if (savedActiveTabId !== null && savedActiveTabId !== undefined) {
+      // Проверяем, существует ли ещё такая вкладка
+      try {
+        await chrome.tabs.get(savedActiveTabId);
+        currentActiveTabId = savedActiveTabId;
+        console.log("Восстановлена активная вкладка:", savedActiveTabId);
+      } catch (e) {
+        // Вкладка была закрыта, пока сервис-воркер спал
+        currentActiveTabId = null;
+        console.log("Сохранённая активная вкладка уже не существует, сброшена.");
+      }
+    } else {
+      currentActiveTabId = null;
+    }
+
+    // Узнаём, какие вкладки СЕЙЧАС реально активны (во ВСЕХ окнах)
     let activeTabIds = new Set();
     try {
       const activeTabs = await chrome.tabs.query({ active: true });
@@ -112,10 +124,12 @@ async function restoreDeactivationTimes() {
     let changed = false;
 
     for (const [id, time] of Object.entries(obj)) {
+      // Пропускаем служебное поле currentActiveTabId
+      if (id === "currentActiveTabId") continue;
+
       const tabId = Number(id);
 
       // 1) Не перезаписываем то, что уже обновилось "вживую"
-      //    (onActivated/onCreated/onFocusChanged сработали пока шёл storage.get)
       if (lastDeactivationTimes.has(tabId)) continue;
 
       // 2) Никогда не восстанавливаем метку неактивности для реально активной вкладки
@@ -125,9 +139,16 @@ async function restoreDeactivationTimes() {
       if (typeof time === 'number' && (now - time) < MAX_AGE_MS) {
         lastDeactivationTimes.set(tabId, time);
       } else {
-        // Запись протухла — не добавляем, помечаем что нужно пересохраниить
         changed = true;
       }
+    }
+
+    // 🔥 Дополнительно: если после восстановления currentActiveTabId всё ещё null,
+    // а в карте деактиваций нет активной вкладки, то на всякий случай попробуем
+    // определить её через syncActiveTab (один раз при первом запуске расширения).
+    if (currentActiveTabId === null) {
+      // Не вызываем syncActiveTab здесь, это будет сделано позже в initActivityTracking.
+      // Просто оставляем возможность.
     }
 
     // Если были протухшие записи — пересохраняем карту без них
@@ -161,6 +182,7 @@ export async function resetDeactivationTimes() {
         currentActiveTabId = tab.id;
       }
     }
+    // 🔥 После сброса сохраняем актуальное состояние
     await _persistDeactivationTimesUnlocked();
   });
 
@@ -178,9 +200,13 @@ export function getLastActiveTime(tab) {
   if (lastDeactivationTimes.has(tab.id)) {
     return lastDeactivationTimes.get(tab.id);
   }
+  // 🔥 Дополнительная страховка: если данных нет, возвращаем текущее время,
+  // чтобы вкладка не казалась неактивной бесконечно долго.
   return tab.lastAccessed || Date.now();
 }
 
+// 🔥 Упрощённый syncActiveTab – больше не нужен при восстановлении,
+// но остаётся для обработки onFocusChanged и как fallback.
 async function syncActiveTab() {
   try {
     const focusedWindow = await chrome.windows.getLastFocused();
@@ -217,7 +243,13 @@ export function initActivityTracking({ restore = true } = {}) {
 
   if (restore) {
     pendingRestorePromise = restoreDeactivationTimes()
-      .then(() => syncActiveTab())
+      .then(() => {
+        // 🔥 Если после восстановления currentActiveTabId так и не определён,
+        // запускаем syncActiveTab для первого определения.
+        if (currentActiveTabId === null) {
+          return syncActiveTab();
+        }
+      })
       .then(() => {
         if (!abortRestore) {
           if (readinessResolve) {
@@ -247,6 +279,8 @@ export function initActivityTracking({ restore = true } = {}) {
     }
     lastDeactivationTimes.delete(newActiveTabId);
     currentActiveTabId = newActiveTabId;
+    // Явно вызываем персистентность, т.к. currentActiveTabId изменился
+    debouncedPersistDeactivationTimes();
   });
 
   chrome.windows.onFocusChanged.addListener((windowId) => {
@@ -258,9 +292,12 @@ export function initActivityTracking({ restore = true } = {}) {
 
   chrome.tabs.onRemoved.addListener((tabId) => {
     lastDeactivationTimes.delete(tabId);
-    debouncedPersistDeactivationTimes();
     if (currentActiveTabId === tabId) {
       currentActiveTabId = null;
+      // Персистентно сбрасываем активную вкладку
+      debouncedPersistDeactivationTimes();
+    } else {
+      debouncedPersistDeactivationTimes();
     }
   });
 
