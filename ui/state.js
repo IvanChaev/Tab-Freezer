@@ -1,8 +1,13 @@
+// @ts-check
 // ui/state.js — общее состояние дашборда: ссылки на DOM, кэши, режимы сортировки.
 // Создаётся один раз в dashboard.js и пробрасывается во все модули панелей.
 
 import { isSystemUrl, formatDuration } from "./dom.js";
+import { STALE_CACHE_THRESHOLD_MS } from "../shared.js";
 
+/**
+ * @returns {import("../types.js").DOMRefs}
+ */
 export function collectElements() {
   return {
     tabs: document.querySelectorAll('.nav-tab'),
@@ -23,15 +28,18 @@ export function collectElements() {
     autoClose: document.getElementById('autoClose'),
     closeOldMinutes: document.getElementById('closeOldMinutes'),
     totalFrozenCount: document.getElementById('totalFrozenCount'),
-    totalSavedMemory: document.getElementById('totalSavedMemory'),
     tempExemptionList: document.getElementById('tempExemptionList'),
     fullFreezeSystemPages: document.getElementById('fullFreezeSystemPages'),
     systemFreezeListEditor: document.getElementById('systemFreezeListEditor')
   };
 }
 
+/**
+ * @param {import("../types.js").DOMRefs} el
+ * @returns {import("../types.js").UIState}
+ */
 export function createState(el) {
-  return {
+  return /** @type {import("../types.js").UIState} */ ({
     el,
     savedTabsCache: [],
     openTabsCache: [],
@@ -39,11 +47,16 @@ export function createState(el) {
     currentSortTabs: 'real',
     tabTimerRefs: new Map(),
     savedTimerRefs: new Map()
-  };
+  });
 }
 
 // ---- Сортировки ----
 
+/**
+ * @param {import("../types.js").SavedEntry[]} saved
+ * @param {import("../types.js").SortMode} mode
+ * @returns {import("../types.js").SavedEntry[]}
+ */
 export function sortSavedTabs(saved, mode) {
   if (mode === 'real') return saved.slice();
   const now = Date.now();
@@ -64,6 +77,11 @@ export function sortSavedTabs(saved, mode) {
   return list;
 }
 
+/**
+ * @param {import("../types.js").TabInfo[]} tabs
+ * @param {import("../types.js").SortMode} mode
+ * @returns {import("../types.js").TabInfo[]}
+ */
 export function sortOpenTabs(tabs, mode) {
   if (mode === 'real') return tabs.slice();
   const now = Date.now();
@@ -84,6 +102,12 @@ export function sortOpenTabs(tabs, mode) {
   return list;
 }
 
+/**
+ * @param {HTMLElement} badge
+ * @param {import("../types.js").TabInfo} tab
+ * @param {number} now
+ * @returns {void}
+ */
 export function updateTabBadge(badge, tab, now) {
   // ✅ Если вкладка помечена как активная в данных — показываем "Активна"
   if (tab.active) {
@@ -95,11 +119,7 @@ export function updateTabBadge(badge, tab, now) {
     ? tab.lastActiveTime
     : (tab.lastAccessed || now);
 
-  // ✅ Защита от stale-кэша: если lastActiveTime практически равен текущему
-  // времени (вкладка только что стала активной, но кэш ещё не обновился через
-  // refreshTabList), показываем "Активна" вместо тикающего счётчика.
-  // Порог 1500 мс покрывает задержку между onActivated и следующим обновлением кэша.
-  if (now - lastActive < 1500) {
+  if (now - lastActive < STALE_CACHE_THRESHOLD_MS) {
     badge.textContent = "● Активна";
     return;
   }

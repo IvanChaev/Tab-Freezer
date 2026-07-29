@@ -1,5 +1,9 @@
+// @ts-check
 // ui/stats.js — компактная статистика в шапке и подробная панель "Статистика".
 
+/**
+ * @param {import("../types.js").UIState} state
+ */
 export function initStats(state) {
   const { el } = state;
 
@@ -21,9 +25,6 @@ export function initStats(state) {
       const res = await chrome.runtime.sendMessage({ type: "get-stats" });
       if (res && res.totalFrozen !== undefined) {
         el.totalFrozenCount.textContent = res.totalFrozen;
-        // Грубая оценка: ~50 МБ на каждую "сэкономленную" вкладку.
-        const savedMemory = res.totalFrozen * 50;
-        el.totalSavedMemory.textContent = '~' + savedMemory; // ← добавлен знак приблизительности
       }
     } catch (e) {
       console.error("Ошибка загрузки панели статистики:", e);

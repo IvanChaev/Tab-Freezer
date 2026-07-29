@@ -1,7 +1,12 @@
+// @ts-check
 // ui/whitelist.js — панель "Белый список"
 
-import { SETTINGS_KEYS, pickSettings } from "../shared.js";
+import { pickSettings } from "../shared.js";
 
+/**
+ * @param {import("../types.js").UIState} state
+ * @param {(message: string, isError?: boolean) => void} showToast
+ */
 export function initWhitelist(state, showToast) {
   const { el } = state;
 

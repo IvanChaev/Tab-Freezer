@@ -1,8 +1,18 @@
-// ui/timers.js — исправленная функция tickTimers
+// @ts-check
+// ui/timers.js — таймеры обновления бейджей и данных
 
 import { formatDuration } from "./dom.js";
 import { updateTabBadge } from "./state.js";
+import {
+  BADGE_TICK_INTERVAL_MS,
+  CACHE_REFRESH_INTERVAL_MS,
+  STATS_UPDATE_INTERVAL_MS,
+  VISIBILITY_THROTTLE_MS,
+} from "../shared.js";
 
+/**
+ * @param {import("../types.js").UIState} state
+ */
 export function initTimers(state) {
   const { el } = state;
 
@@ -27,7 +37,6 @@ export function initTimers(state) {
     }
   }
 
-  // ✅ ИСПРАВЛЕНИЕ: таймер раз в секунду + принудительное обновление активной вкладки
   const timerInterval = setInterval(() => {
     updateIfVisible(() => {
       const activePane = document.querySelector('.tab-pane.active')?.id;
@@ -38,11 +47,8 @@ export function initTimers(state) {
         state.refreshTempExemptions?.();
       }
     });
-  }, 1000);
+  }, BADGE_TICK_INTERVAL_MS);
 
-  // ✅ НОВОЕ: раз в 3 секунды обновляем кэш вкладок, чтобы tab.active был актуальным.
-  // Это гарантирует, что если пользователь переключился на вкладку и вернулся,
-  // бейдж перестанет тикать даже без полного перерендера.
   const cacheRefreshInterval = setInterval(() => {
     updateIfVisible(async () => {
       const activePane = document.querySelector('.tab-pane.active')?.id;
@@ -66,20 +72,20 @@ export function initTimers(state) {
         }
       }
     });
-  }, 3000);
+  }, CACHE_REFRESH_INTERVAL_MS);
 
   const updateInterval = setInterval(() => {
     updateIfVisible(() => {
       state.refreshStats?.();
       updateBadgeCounts();
     });
-  }, 5000);
+  }, STATS_UPDATE_INTERVAL_MS);
 
   let lastVisibilityUpdate = 0;
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       const now = Date.now();
-      if (now - lastVisibilityUpdate > 5000) {
+      if (now - lastVisibilityUpdate > VISIBILITY_THROTTLE_MS) {
         lastVisibilityUpdate = now;
         state.refreshStats?.();
         updateBadgeCounts();

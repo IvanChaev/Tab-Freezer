@@ -1,5 +1,10 @@
+// @ts-check
 // ui/temps.js — панель "Временные исключения": активные записи и ручное удаление.
 
+/**
+ * @param {import("../types.js").UIState} state
+ * @param {(message: string, isError?: boolean) => void} showToast
+ */
 export function initTemps(state, showToast) {
   const { el } = state;
 

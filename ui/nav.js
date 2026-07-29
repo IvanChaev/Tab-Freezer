@@ -1,6 +1,9 @@
+// @ts-check
 // ui/nav.js — переключение между панелями в боковой навигации.
-// При переходе на панель дёргает нужный refresh-обработчик из state.
 
+/**
+ * @param {import("../types.js").UIState} state
+ */
 export function initNav(state) {
   const { el } = state;
 

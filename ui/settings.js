@@ -1,7 +1,12 @@
+// @ts-check
 // ui/settings.js — панель "Настройки"
 
-import { DEFAULT_SETTINGS, SETTINGS_KEYS, pickSettings } from "../shared.js";
+import { DEFAULT_SETTINGS, pickSettings } from "../shared.js";
 
+/**
+ * @param {import("../types.js").UIState} state
+ * @param {(message: string, isError?: boolean) => void} showToast
+ */
 export function initSettings(state, showToast) {
   const { el } = state;
 

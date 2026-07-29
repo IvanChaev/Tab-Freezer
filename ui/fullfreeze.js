@@ -1,6 +1,11 @@
+// @ts-check
 // ui/fullfreeze.js — панель "Настройки полной заморозки"
-import { SETTINGS_KEYS, pickSettings } from "../shared.js";
+import { pickSettings } from "../shared.js";
 
+/**
+ * @param {import("../types.js").UIState} state
+ * @param {(message: string, isError?: boolean) => void} showToast
+ */
 export function initFullFreeze(state, showToast) {
   const { el } = state;
 

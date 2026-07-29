@@ -1,5 +1,10 @@
+// @ts-check
 // ui/logs.js — панель "Журнал": история событий и её очистка.
 
+/**
+ * @param {import("../types.js").UIState} state
+ * @param {(message: string, isError?: boolean) => void} showToast
+ */
 export function initLogs(state, showToast) {
   const { el } = state;
 
