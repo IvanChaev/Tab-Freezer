@@ -1,16 +1,18 @@
+// @ts-check
 // background.js — точка входа service worker'а.
 import { ensureSettings, addLog } from "./bg/storage.js";
 import { ALARM_NAME, runFreezeCheck } from "./bg/freeze.js";
 import { openDashboard } from "./bg/open-dashboard.js";
 import { setupMessageListener } from "./bg/messages.js";
-import { updateAudioCache, removeFromAudioCache } from "./bg/audio-cache.js";
+import { updateAudioCache, removeFromAudioCache, cleanAudioCache } from "./bg/audio-cache.js";
 import { initActivityTracking, resetDeactivationTimes } from "./bg/activity.js";
+import { ALARM_PERIOD_MINUTES } from "./shared.js";
 
 async function ensureAlarm() {
   try {
     const existing = await chrome.alarms.get(ALARM_NAME);
     if (!existing) {
-      chrome.alarms.create(ALARM_NAME, { periodInMinutes: 1 });
+      chrome.alarms.create(ALARM_NAME, { periodInMinutes: ALARM_PERIOD_MINUTES });
       addLog("Инициализация", `Создан алярм ${ALARM_NAME}`);
     }
   } catch (e) {
@@ -83,4 +85,6 @@ function registerListeners() {
   } catch (e) {
     console.error("Ошибка стартовой проверки:", e);
   }
+
+  setInterval(cleanAudioCache, 30000);
 })();

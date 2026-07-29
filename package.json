@@ -1,0 +1,13 @@
+{
+  "name": "tab-freezer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "vitest": "^2.1.0"
+  }
+}

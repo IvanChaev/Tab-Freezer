@@ -179,7 +179,7 @@ header h1 { font-size: 1.25rem; font-weight: 600; }
   color: #fff;
 }
 
-.tab-list { display: flex; flex-direction: column; gap: 8px; }
+.tab-list { display: flex; flex-direction: column; gap: 8px; max-height: 600px; }
 
 .tab-row {
   display: flex;

@@ -1,7 +1,9 @@
+// @ts-check
 // dashboard.js — точка входа для панели управления.
 // Собирает ссылки на DOM, состояние, инициализирует все модули ui/*.
 
 import { collectElements, createState } from "./ui/state.js";
+import { RETRY_COUNT, RETRY_DELAY_MS, MAX_RETRY_DELAY_MS, INIT_DELAY_MS, INIT_RETRY_DELAY_MS, INIT_RETRY_COUNT, VISIBILITY_THROTTLE_MS } from "./shared.js";
 import { makeToast } from "./ui/dom.js";
 import { initNav } from "./ui/nav.js";
 import { initSavedTabs } from "./ui/saved.js";
@@ -81,7 +83,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // ---- Загрузка всех данных с повторными попытками ----
-  async function loadAllData(retries = 3, delay = 500) {
+  async function loadAllData(retries = RETRY_COUNT, delay = RETRY_DELAY_MS) {
     hideLoadError();
     try {
       await state.loadSettings();
@@ -99,7 +101,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if ((isChannelError || isContextError) && retries > 0) {
         console.log(`Повторная попытка через ${delay} мс (осталось попыток: ${retries - 1})...`);
-        setTimeout(() => loadAllData(retries - 1, Math.min(delay * 1.5, 3000)), delay);
+        setTimeout(() => loadAllData(retries - 1, Math.min(delay * 1.5, MAX_RETRY_DELAY_MS)), delay);
         return;
       }
 
@@ -122,7 +124,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // ---- Реакция на фоновую заморозку (сообщение freeze-done) ----
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "freeze-done") {
-      refreshIfVisible(loadAllData, 3, 200);
+      refreshIfVisible(loadAllData, RETRY_COUNT, RETRY_DELAY_MS);
     }
   });
 
@@ -138,7 +140,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       const now = Date.now();
-      if (now - lastVisibilityUpdate > 5000) {
+      if (now - lastVisibilityUpdate > VISIBILITY_THROTTLE_MS) {
         lastVisibilityUpdate = now;
         state.refreshTabList?.();
         state.refreshSavedList?.();
@@ -149,6 +151,5 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Даём service worker немного времени на пробуждение, затем стартуем
-  setTimeout(() => loadAllData(5, 300), 300);
+  setTimeout(() => loadAllData(INIT_RETRY_COUNT, INIT_RETRY_DELAY_MS), INIT_DELAY_MS);
 });

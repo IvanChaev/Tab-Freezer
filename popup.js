@@ -1,4 +1,5 @@
-import { normalizeDomain } from "./shared.js";
+// @ts-check
+import { normalizeDomain, tryGetHostname, MESSAGE_TIMEOUT_MS } from "./shared.js";
 
 document.addEventListener("DOMContentLoaded", () => {
   const versionEl = document.getElementById("popupVersion");
@@ -41,10 +42,8 @@ document.addEventListener("DOMContentLoaded", () => {
         statusEl.textContent = "Не удалось определить сайт";
         return;
       }
-      let hostname;
-      try {
-        hostname = new URL(tab.url).hostname;
-      } catch {
+      const hostname = tryGetHostname(tab.url);
+      if (!hostname) {
         statusEl.textContent = "Некорректный URL";
         return;
       }
@@ -57,20 +56,29 @@ document.addEventListener("DOMContentLoaded", () => {
       // Запрос с таймаутом 3 секунды
       const res = await Promise.race([
         chrome.runtime.sendMessage({ type: "get-temp-exemptions" }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 3000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), MESSAGE_TIMEOUT_MS))
       ]);
       const exemptions = res.exemptions || [];
       const found = exemptions.find(e => e.domain === domain);
 
       if (found) {
         const remaining = Math.max(0, Math.round((found.expiry - Date.now()) / 60000));
-        statusEl.innerHTML = `✅ Активно: <strong>${domain}</strong> (осталось ~${remaining} мин) 
-          <button class="remove-temp" id="removeTempBtn">Отменить</button>`;
-        document.getElementById('removeTempBtn').addEventListener('click', async () => {
-          await chrome.runtime.sendMessage({ type: "remove-temp-exemption", domain });
-          updateTempStatus();
-          loadPopupStats();
-        });
+        statusEl.replaceChildren();
+        statusEl.append(
+          document.createTextNode(`✅ Активно: `),
+          Object.assign(document.createElement('strong'), { textContent: domain }),
+          document.createTextNode(` (осталось ~${remaining} мин) `),
+          Object.assign(document.createElement('button'), {
+            className: 'remove-temp',
+            id: 'removeTempBtn',
+            textContent: 'Отменить',
+            onclick: async () => {
+              await chrome.runtime.sendMessage({ type: "remove-temp-exemption", domain });
+              updateTempStatus();
+              loadPopupStats();
+            }
+          })
+        );
       } else {
         statusEl.textContent = `Нет активного исключения для ${domain}.`;
       }
@@ -89,10 +97,8 @@ document.addEventListener("DOMContentLoaded", () => {
       alert("Не удалось определить текущую вкладку.");
       return;
     }
-    let hostname;
-    try {
-      hostname = new URL(tab.url).hostname;
-    } catch {
+    const hostname = tryGetHostname(tab.url);
+    if (!hostname) {
       alert("Некорректный URL.");
       return;
     }
