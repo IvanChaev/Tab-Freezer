@@ -34,7 +34,7 @@
 
 Расширение устанавливается через режим разработчика в браузерах на базе Chromium (Chrome, Edge, Opera и др.).
 
-### Шаг 1. Скачайте [новейшую версию](https://github.com/IvanChaev/Tab-Freezer/archive/refs/tags/v3.5.3.zip)
+### Шаг 1. Скачайте [новейшую версию](https://github.com/IvanChaev/Tab-Freezer/archive/refs/tags/v4.0.0.zip)
 
 Скачайте и распакуйте архив с проектом в удобную папку.
 
