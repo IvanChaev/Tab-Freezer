@@ -1,10 +1,14 @@
-// bg/activity.js
+// @ts-check
+// bg/activity.js — трекинг активной вкладки в браузере
 import { withStorageLock } from "./storage.js";
+import { ACTIVITY_READINESS_TIMEOUT_MS, PERSIST_DEBOUNCE_MS } from "../shared.js";
 
 // Включи для диагностики, но не оставляй в проде.
 const DEBUG = false;
 
+/** @type {Map<number, number>} */
 const lastDeactivationTimes = new Map();
+/** @type {number|null} */
 let currentActiveTabId = null;
 
 // ─── Защита от гонки restore vs live-события ───
@@ -12,17 +16,16 @@ let currentActiveTabId = null;
 // перед тем, как окончательно выставить currentActiveTabId. Если за это время реально
 // сработает chrome.tabs.onActivated / onFocusChanged / onCreated, его результат нельзя
 // безусловно затирать устаревшим значением из storage.
+/** @type {boolean} */
 let restoreInProgress = false;
+/** @type {boolean} */
 let liveUpdateDuringRestore = false;
 
 export { lastDeactivationTimes };
 
 /**
- * Оставлен для совместимости, отладки и возможных UI-нужд.
- *
- * ВАЖНО:
- * freeze.js больше НЕ должен использовать эту функцию как источник правды.
- * Для заморозки авторитетным источником является свежий tab.active из chrome.tabs.get().
+ * Возвращает текущий активный ID вкладки (из внутреннего трекера).
+ * @returns {number|null}
  */
 export function getCurrentActiveTabId() {
   return currentActiveTabId;
@@ -30,11 +33,18 @@ export function getCurrentActiveTabId() {
 
 const STORAGE_KEY = "tabDeactivationTimes";
 
+/** @type {((value: void) => void)|null} */
 let readinessResolve = null;
+/** @type {Promise<void>|null} */
 let readinessPromise = null;
+/** @type {Promise<void>|null} */
 let pendingRestorePromise = null;
+/** @type {boolean} */
 let abortRestore = false;
 
+/**
+ * @returns {void}
+ */
 function createReadinessPromise() {
   if (readinessResolve) {
     readinessResolve();
@@ -45,16 +55,12 @@ function createReadinessPromise() {
   });
 }
 
-const READINESS_TIMEOUT_MS = 5000;
-
 /**
  * Ждёт готовности activity tracking.
- *
- * Возвращает:
- * - true, если состояние успешно восстановилось;
- * - false, если сработал таймаут.
+ * @param {number} [timeoutMs=ACTIVITY_READINESS_TIMEOUT_MS]
+ * @returns {Promise<boolean>} true — готов, false — таймаут
  */
-export function waitForActivityReadiness(timeoutMs = READINESS_TIMEOUT_MS) {
+export function waitForActivityReadiness(timeoutMs = ACTIVITY_READINESS_TIMEOUT_MS) {
   if (!readinessPromise) {
     createReadinessPromise();
   }
@@ -74,13 +80,38 @@ export function waitForActivityReadiness(timeoutMs = READINESS_TIMEOUT_MS) {
   ]);
 }
 
-// ─── Персист ───
-// Пишем сразу, без debounce, чтобы MV3 service worker не потерял последнее изменение,
-// если браузер выгрузит его в течение debounce-окна.
+// ─── Персист с debounce ───
+/** @type {ReturnType<typeof setTimeout>|null} */
+let persistTimeoutId = null;
+
+/**
+ * Отложенное сохранение с debounce.
+ * @returns {void}
+ */
 function schedulePersist() {
+  if (persistTimeoutId) clearTimeout(persistTimeoutId);
+  persistTimeoutId = setTimeout(() => {
+    persistTimeoutId = null;
+    persistDeactivationTimes().catch(console.error);
+  }, PERSIST_DEBOUNCE_MS);
+}
+
+/**
+ * Немедленное сохранение (для onRemoved — терять закрытие вкладки нельзя).
+ * @returns {void}
+ */
+function schedulePersistImmediate() {
+  if (persistTimeoutId) {
+    clearTimeout(persistTimeoutId);
+    persistTimeoutId = null;
+  }
   persistDeactivationTimes().catch(console.error);
 }
 
+/**
+ * Сохраняет карту деактиваций и activeTabId в storage (без мьютекса).
+ * @returns {Promise<void>}
+ */
 async function _persistDeactivationTimesUnlocked() {
   const obj = {
     currentActiveTabId: currentActiveTabId
@@ -93,10 +124,16 @@ async function _persistDeactivationTimesUnlocked() {
   await chrome.storage.local.set({ [STORAGE_KEY]: obj });
 }
 
+/**
+ * @returns {Promise<void>}
+ */
 async function persistDeactivationTimes() {
   return withStorageLock(() => _persistDeactivationTimesUnlocked());
 }
 
+/**
+ * @returns {void}
+ */
 function markLiveUpdateDuringRestore() {
   if (restoreInProgress) {
     liveUpdateDuringRestore = true;
@@ -127,7 +164,7 @@ async function restoreDeactivationTimes() {
 
     try {
       const data = await chrome.storage.local.get(STORAGE_KEY);
-      const obj = data[STORAGE_KEY] || {};
+      const obj = /** @type {Record<string, number>} */ (data[STORAGE_KEY] || {});
       const now = Date.now();
       const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -259,6 +296,7 @@ async function restoreDeactivationTimes() {
 /**
  * Полный сброс состояния активности.
  * Используется, например, при chrome.runtime.onStartup.
+ * @returns {Promise<void>}
  */
 export async function resetDeactivationTimes() {
   abortRestore = true;
@@ -320,9 +358,8 @@ export async function resetDeactivationTimes() {
 
 /**
  * Возвращает время последней активности вкладки.
- *
- * Авторитетный признак активности — tab.active.
- * currentActiveTabId здесь намеренно НЕ используется.
+ * @param {chrome.tabs.Tab} tab
+ * @returns {number}
  */
 export function getLastActiveTime(tab) {
   if (DEBUG) {
@@ -401,10 +438,8 @@ async function syncActiveTab() {
 
 /**
  * Инициализация трекинга активности.
- *
- * ВАЖНО:
- * listeners регистрируются синхронно внутри этой функции, чтобы не потерять события
- * пробуждения service worker'а.
+ * @param {{ restore?: boolean }} [options]
+ * @returns {Promise<void>|null}
  */
 export function initActivityTracking({ restore = true } = {}) {
   createReadinessPromise();
@@ -474,7 +509,7 @@ export function initActivityTracking({ restore = true } = {}) {
       currentActiveTabId = null;
     }
 
-    schedulePersist();
+    schedulePersistImmediate();
   });
 
   chrome.tabs.onCreated.addListener((tab) => {

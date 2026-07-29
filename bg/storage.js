@@ -1,46 +1,27 @@
-// bg/storage.js — слой хранилища chrome.storage.local: мьютекс, обработка квоты,
+// @ts-check
+// bg/storage.js — слой хранилища chrome.storage.local: обработка квоты,
 // инициализация дефолтов и лог. Никакой бизнес-логики "заморозки" — только данные.
+// Мьютекс для последовательного доступа вынесен в ./lock.js.
 
-import { DEFAULT_SETTINGS } from "../shared.js";
-
-// === ЗАЩИТА ОТ ГОНКИ (race condition) ===
-let storageMutex = Promise.resolve();
-
-/**
- * Выполняет задачу, захватывая мьютекс. Опциональный таймаут (мс) предотвращает
- * бесконечную блокировку, если chrome.storage зависает.
- * Если таймаут истекает, мьютекс освобождается, но сама задача продолжает выполняться.
- */
-export function withStorageLock(task, timeoutMs = 30000) {
-  const run = storageMutex.then(() => {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`Storage lock timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      task()
-        .then(result => {
-          clearTimeout(timer);
-          resolve(result);
-        })
-        .catch(err => {
-          clearTimeout(timer);
-          reject(err);
-        });
-    });
-  });
-
-  // Обновляем цепочку мьютекса: следующий в очереди ждёт завершения (или таймаута) текущей задачи
-  storageMutex = run.then(() => {}, () => {});
-  return run;
-}
+import { DEFAULT_SETTINGS, LOG_MAX_LENGTH } from "../shared.js";
+import { withStorageLock } from "./lock.js";
+export { withStorageLock };
 
 // === ЗАЩИТА ОТ ПРЕВЫШЕНИЯ КВОТЫ ===
+/**
+ * @param {unknown} e
+ * @returns {boolean}
+ */
 function isQuotaError(e) {
   const msg = (e && e.message) || String(e || "");
   return /quota/i.test(msg);
 }
 
+/**
+ * Сохраняет список замороженных вкладок, с поэтапным сжатием при превышении квоты.
+ * @param {import("../types.js").SavedEntry[]} savedTabs
+ * @returns {Promise<import("../types.js").SavedEntry[]>}
+ */
 export async function persistSavedTabs(savedTabs) {
   try {
     await chrome.storage.local.set({ savedTabs });
@@ -82,26 +63,37 @@ export async function persistSavedTabs(savedTabs) {
   return [];
 }
 
-// Запись лога БЕЗ захвата мьютекса.
-// Использовать ТОЛЬКО внутри уже захваченного withStorageLock.
+/**
+ * Запись лога БЕЗ захвата мьютекса.
+ * Использовать ТОЛЬКО внутри уже захваченного withStorageLock.
+ * @param {string} action
+ * @param {string} [details=""]
+ */
 export async function writeLogUnlocked(action, details = "") {
   try {
     const data = await chrome.storage.local.get("logs");
     const logs = data.logs || [];
     logs.unshift({ timestamp: Date.now(), action, details });
-    if (logs.length > 100) logs.length = 100;
+    if (logs.length > LOG_MAX_LENGTH) logs.length = LOG_MAX_LENGTH;
     await chrome.storage.local.set({ logs });
   } catch (e) {
     console.error("Log error:", e);
   }
 }
 
-// Запись лога С захватом мьютекса.
-// Использовать из кода, который НЕ находится внутри withStorageLock.
+/**
+ * Запись лога С захватом мьютекса.
+ * Использовать из кода, который НЕ находится внутри withStorageLock.
+ * @param {string} action
+ * @param {string} [details=""]
+ */
 export async function addLog(action, details = "") {
   return withStorageLock(() => writeLogUnlocked(action, details));
 }
 
+/**
+ * @returns {Promise<number|undefined>}
+ */
 export async function incrementTotalFrozenUnlocked() {
   try {
     const data = await chrome.storage.local.get("totalFrozen");
@@ -113,14 +105,21 @@ export async function incrementTotalFrozenUnlocked() {
   }
 }
 
+/**
+ * @returns {Promise<number|undefined>}
+ */
 export async function incrementTotalFrozen() {
   return withStorageLock(incrementTotalFrozenUnlocked);
 }
 
+/**
+ * Инициализирует/восстанавливает настройки и структуры хранилища.
+ * @returns {Promise<void>}
+ */
 export async function ensureSettings() {
   return withStorageLock(async () => {
     try {
-      const data = await chrome.storage.local.get(["settings", "savedTabs", "logs", "totalFrozen", "tempExemptions"]);
+      const data = /** @type {import("../types.js").StorageData} */ (await chrome.storage.local.get(["settings", "savedTabs", "logs", "totalFrozen", "tempExemptions"]));
       let changed = false;
 
       let settings = data.settings;

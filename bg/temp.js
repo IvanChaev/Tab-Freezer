@@ -1,31 +1,36 @@
+// @ts-check
 // bg/temp.js — временные исключения для доменов.
-// Хранятся в chrome.storage.local.tempExemptions как [{ domain, expiry }].
-// "Просроченные" записи автоматически вычищаются при чтении.
 
 import { withStorageLock } from "./storage.js";
 
+/**
+ * @returns {Promise<import("../types.js").TempExemption[]>}
+ */
 async function getTempExemptions() {
   const data = await chrome.storage.local.get("tempExemptions");
-  return data.tempExemptions || [];
+  return /** @type {import("../types.js").TempExemption[]} */ (data.tempExemptions || []);
 }
 
-// Версия БЕЗ мьютекса — только для использования внутри уже захваченного withStorageLock
+/**
+ * Версия БЕЗ мьютекса — только для использования внутри уже захваченного withStorageLock.
+ * @param {import("../types.js").TempExemption[]} exemptions
+ */
 export async function setTempExemptionsUnlocked(exemptions) {
   await chrome.storage.local.set({ tempExemptions: exemptions });
 }
 
-// Версия С мьютексом — для использования извне
+/**
+ * Версия С мьютексом — для использования извне.
+ * @param {import("../types.js").TempExemption[]} exemptions
+ */
 async function setTempExemptions(exemptions) {
   return withStorageLock(() => setTempExemptionsUnlocked(exemptions));
 }
 
 /**
  * Проверяет, есть ли активное временное исключение для данного hostname.
- * Заодно чистит просроченные записи из хранилища, если такие есть.
- *
- * ВАЖНО: эта функция вызывается из freeze.js изнутри runFreezeCheck, который
- * уже держит withStorageLock — поэтому здесь используется НЕзалоченная запись
- * (setTempExemptionsUnlocked), иначе получился бы дедлок мьютекса.
+ * @param {string} hostname
+ * @returns {Promise<boolean>}
  */
 async function isTempExempted(hostname) {
   if (!hostname) return false;

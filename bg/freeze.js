@@ -1,5 +1,6 @@
+// @ts-check
 // bg/freeze.js — основная бизнес-логика "заморозки"
-import { DEFAULT_SETTINGS, isSystemUrl } from "../shared.js";
+import { DEFAULT_SETTINGS, isSystemUrl, tryGetHostname } from "../shared.js";
 import {
   withStorageLock,
   persistSavedTabs,
@@ -24,6 +25,11 @@ const PROTECTED_SYSTEM_URLS = [
   "about:preferences"
 ];
 
+/**
+ * @param {string} hostname
+ * @param {string[]} whitelist
+ * @returns {boolean}
+ */
 function isWhitelisted(hostname, whitelist) {
   if (!hostname || !Array.isArray(whitelist) || whitelist.length === 0) {
     return false;
@@ -37,6 +43,11 @@ function isWhitelisted(hostname, whitelist) {
   });
 }
 
+/**
+ * @param {chrome.tabs.Tab} tab
+ * @param {number} now
+ * @returns {import("../types.js").SavedEntry}
+ */
 function makeSavedEntry(tab, now) {
   return {
     id:
@@ -51,15 +62,10 @@ function makeSavedEntry(tab, now) {
 }
 
 /**
- * Черновая проверка пригодности вкладки к заморозке.
- *
- * ВАЖНО:
- * Эта проверка работает по снэпшоту вкладок из chrome.tabs.query({}).
- * Она может немного устареть к моменту реального действия, поэтому перед
- * discard/remove делается ещё одна свежая проверка через chrome.tabs.get(tab.id).
- *
- * getCurrentActiveTabId() здесь намеренно НЕ используется.
- * Источник правды — браузерное состояние вкладки, особенно свежий tab.active.
+ * Проверка пригодности вкладки к заморозке.
+ * @param {chrome.tabs.Tab} tab
+ * @param {import("../types.js").Settings} settings
+ * @returns {Promise<boolean>}
  */
 async function isEligibleForFreeze(tab, settings) {
   if (tab.active) return false;
@@ -100,23 +106,19 @@ async function isEligibleForFreeze(tab, settings) {
 
   if (tab.discarded && !settings.aggressiveFreeze) return false;
 
-  try {
-    const hostname = new URL(tab.url).hostname;
+  const hostname = tryGetHostname(tab.url);
+  if (!hostname) return false;
 
-    if (isWhitelisted(hostname, settings.whitelist)) return false;
-    if (await isTempExempted(hostname)) return false;
-  } catch {
-    return false;
-  }
+  if (isWhitelisted(hostname, settings.whitelist)) return false;
+  if (await isTempExempted(hostname)) return false;
 
   return true;
 }
 
 /**
  * Внешняя точка входа для проверки заморозки.
- *
- * waitForActivityReadiness() вызывается ВНЕ storage mutex, чтобы не держать
- * мьютекс во время ожидания готовности activity tracking.
+ * @param {string} [reason="alarm"]
+ * @returns {Promise<number>} количество замороженных вкладок
  */
 export async function runFreezeCheck(reason = "alarm") {
   const activityReady = await waitForActivityReadiness();

@@ -1,5 +1,9 @@
+// @ts-check
 // bg/open-dashboard.js — открыть (или сфокусировать уже открытую) панель управления.
 
+/**
+ * @returns {Promise<void>}
+ */
 export async function openDashboard() {
   const dashboardUrl = chrome.runtime.getURL("dashboard.html");
   const tabs = await chrome.tabs.query({ url: dashboardUrl });

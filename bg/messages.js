@@ -1,6 +1,7 @@
+// @ts-check
 // bg/messages.js — единый роутер chrome.runtime.onMessage
 
-import { DEFAULT_SETTINGS, normalizeDomain, SETTINGS_KEYS, pickSettings } from "../shared.js";
+import { DEFAULT_SETTINGS, normalizeDomain, pickSettings } from "../shared.js";
 import { ensureSettings, persistSavedTabs, withStorageLock, writeLogUnlocked, addLog } from "./storage.js";
 import { getTempExemptions, setTempExemptions } from "./temp.js";
 import { runFreezeCheck } from "./freeze.js";
@@ -34,6 +35,9 @@ async function ensureSettingsCached() {
   }
 }
 
+/**
+ * @returns {void}
+ */
 export function setupMessageListener() {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "get-stats") {
@@ -62,12 +66,16 @@ export function setupMessageListener() {
   });
 }
 
+/**
+ * @param {Record<string, unknown>} message
+ * @returns {Promise<unknown>}
+ */
 async function handleMessage(message) {
   await ensureSettingsCached();
 
-  const data = await chrome.storage.local.get(["settings", "savedTabs", "logs", "totalFrozen", "tempExemptions"]);
-  const settings = data.settings || DEFAULT_SETTINGS;
-  const savedTabs = data.savedTabs || [];
+  const data = /** @type {import("../types.js").StorageData} */ (await chrome.storage.local.get(["settings", "savedTabs", "logs", "totalFrozen", "tempExemptions"]));
+  const settings = /** @type {import("../types.js").Settings} */ (data.settings || DEFAULT_SETTINGS);
+  const savedTabs = /** @type {import("../types.js").SavedEntry[]} */ (data.savedTabs || []);
   const totalFrozen = data.totalFrozen || 0;
 
   switch (message.type) {
@@ -151,6 +159,10 @@ async function handleMessage(message) {
 
 // ---- Вспомогательные обработчики ----
 
+/**
+ * @param {{ tabId?: number }} message
+ * @returns {Promise<import("../types.js").OkResponse>}
+ */
 async function handleCloseTab(message) {
   if (message.tabId) {
     await chrome.tabs.remove(message.tabId);
@@ -159,6 +171,10 @@ async function handleCloseTab(message) {
   return { ok: true };
 }
 
+/**
+ * @param {{ tabId?: number, windowId?: number }} message
+ * @returns {Promise<import("../types.js").OkResponse>}
+ */
 async function handleActivateTab(message) {
   if (message.tabId) {
     await chrome.tabs.update(message.tabId, { active: true });
