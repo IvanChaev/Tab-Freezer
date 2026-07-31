@@ -5,7 +5,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("../../bg/activity.js", () => ({
   waitForActivityReadiness: vi.fn(() => Promise.resolve(true)),
   getLastActiveTime: vi.fn((tab) =>
-    tab.active ? Date.now() : (tab.lastAccessed || Date.now()),
+    tab.active
+      ? Date.now()
+      : (typeof tab.lastAccessed === "number" ? tab.lastAccessed : 0),
   ),
 }));
 
@@ -210,6 +212,102 @@ describe("runFreezeCheck", () => {
     await runFreezeCheck("test");
     const { savedTabs } = await chrome.storage.local.get("savedTabs");
     expect(savedTabs.length).toBe(0);
+  });
+
+  it("выполняет автоочистку, даже если activity tracking не готов", async () => {
+    const { waitForActivityReadiness } = await import("../../bg/activity.js");
+    waitForActivityReadiness.mockResolvedValue(false);
+
+    const old = Date.now() - 10 * 24 * 60 * 60 * 1000; // 10 дней назад
+    await chrome.storage.local.set({
+      settings: {
+        timeoutMinutes: 15,
+        closeOldMinutes: 60,
+        autoClose: true,
+        excludePinned: true,
+        excludeAudio: true,
+        aggressiveFreeze: false,
+        whitelist: [],
+        fullFreezeSystemPages: false,
+        systemFreezeList: [],
+      },
+      savedTabs: [
+        { id: "stale", url: "https://old.com", title: "Old", closedAt: old },
+      ],
+    });
+
+    const count = await runFreezeCheck("test");
+    expect(count).toBe(0);
+
+    const { savedTabs } = await chrome.storage.local.get("savedTabs");
+    expect(savedTabs.length).toBe(0);
+
+    waitForActivityReadiness.mockResolvedValue(true);
+  });
+
+  it("не удаляет свежие записи при неготовом activity tracking", async () => {
+    const { waitForActivityReadiness } = await import("../../bg/activity.js");
+    waitForActivityReadiness.mockResolvedValue(false);
+
+    await chrome.storage.local.set({
+      settings: {
+        timeoutMinutes: 15,
+        closeOldMinutes: 60,
+        autoClose: true,
+        excludePinned: true,
+        excludeAudio: true,
+        aggressiveFreeze: false,
+        whitelist: [],
+        fullFreezeSystemPages: false,
+        systemFreezeList: [],
+      },
+      savedTabs: [
+        {
+          id: "fresh",
+          url: "https://fresh.com",
+          title: "Fresh",
+          closedAt: Date.now(),
+        },
+      ],
+    });
+
+    await runFreezeCheck("test");
+
+    const { savedTabs } = await chrome.storage.local.get("savedTabs");
+    expect(savedTabs.length).toBe(1);
+
+    waitForActivityReadiness.mockResolvedValue(true);
+  });
+
+  it("замораживает системную страницу с null lastAccessed", async () => {
+    await chrome.storage.local.set({
+      settings: {
+        timeoutMinutes: 1,
+        closeOldMinutes: 120,
+        autoClose: false,
+        excludePinned: false,
+        excludeAudio: false,
+        aggressiveFreeze: false,
+        whitelist: [],
+        fullFreezeSystemPages: true,
+        systemFreezeList: ["chrome://history"],
+      },
+    });
+    chrome._mock.addTab({
+      id: 1,
+      active: false,
+      url: "chrome://history",
+      title: "History",
+      lastAccessed: null,
+    });
+
+    const count = await runFreezeCheck("test");
+    expect(count).toBe(1);
+    expect(chrome.tabs.remove).toHaveBeenCalledWith(1);
+
+    const { savedTabs } = await chrome.storage.local.get("savedTabs");
+    expect(savedTabs.length).toBe(1);
+    expect(savedTabs[0].url).toBe("chrome://history");
   });
 
   it("не трогает страницы расширения", async () => {

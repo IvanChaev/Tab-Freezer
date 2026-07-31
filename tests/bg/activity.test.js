@@ -79,6 +79,13 @@ describe("getLastActiveTime", () => {
     });
     expect(result).toBe(1000);
   });
+
+  it("возвращает 0 для неактивной без записи и без lastAccessed (системные страницы)", () => {
+    const result = getLastActiveTime({
+      id: 1, active: false, lastAccessed: null,
+    });
+    expect(result).toBe(0);
+  });
 });
 
 describe("resetDeactivationTimes", () => {
