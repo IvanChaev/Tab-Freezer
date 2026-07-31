@@ -116,6 +116,58 @@ async function isEligibleForFreeze(tab, settings) {
 }
 
 /**
+ * Автоочистка устаревших сохранённых записей.
+ * Вызывается ТОЛЬКО внутри уже захваченного withStorageLock.
+ * @param {import("../types.js").Settings} settings
+ * @param {import("../types.js").SavedEntry[]} savedTabs
+ * @param {number} now
+ * @returns {Promise<boolean>} true, если список был изменён
+ */
+async function cleanupStaleSavedTabsUnlocked(settings, savedTabs, now) {
+  if (!settings.autoClose || !(settings.closeOldMinutes > 0)) {
+    return false;
+  }
+
+  const maxAgeMs = settings.closeOldMinutes * 60 * 1000;
+  const before = savedTabs.length;
+
+  const filtered = savedTabs.filter(t => (now - t.closedAt) <= maxAgeMs);
+
+  if (filtered.length === before) {
+    return false;
+  }
+
+  savedTabs.length = 0;
+  savedTabs.push(...filtered);
+
+  await writeLogUnlocked(
+    "Автоочистка",
+    `Удалено устаревших: ${before - filtered.length}`
+  );
+
+  return true;
+}
+
+/**
+ * Автоочистка в одиночку (без заморозки) — для случаев, когда activity tracking
+ * не готов и полную проверку приходится пропустить. Вызывается внутри withStorageLock.
+ * @returns {Promise<void>}
+ */
+async function runCleanupOnlyUnlocked() {
+  try {
+    const data = await chrome.storage.local.get(["settings", "savedTabs"]);
+    const settings = data.settings || DEFAULT_SETTINGS;
+    const savedTabs = data.savedTabs || [];
+
+    if (await cleanupStaleSavedTabsUnlocked(settings, savedTabs, Date.now())) {
+      await persistSavedTabs(savedTabs);
+    }
+  } catch (err) {
+    console.error("Автоочистка устаревших записей не выполнена:", err);
+  }
+}
+
+/**
  * Внешняя точка входа для проверки заморозки.
  * @param {string} [reason="alarm"]
  * @returns {Promise<number>} количество замороженных вкладок
@@ -125,16 +177,17 @@ export async function runFreezeCheck(reason = "alarm") {
 
   if (!activityReady) {
     console.warn(
-      "Activity tracking не готов вовремя, пропускаем эту проверку заморозки:",
+      "Activity tracking не готов вовремя, пропускаем заморозку, но выполняем автоочистку:",
       reason
     );
 
-    await withStorageLock(() =>
-      writeLogUnlocked(
+    await withStorageLock(async () => {
+      await writeLogUnlocked(
         "Проверка",
-        `Пропущена (${reason}): activity tracking не готов вовремя`
-      )
-    );
+        `Пропущена (${reason}): activity tracking не готов вовремя, выполнена только автоочистка`
+      );
+      await runCleanupOnlyUnlocked();
+    });
 
     return 0;
   }
@@ -170,22 +223,8 @@ async function runFreezeCheckInner(reason = "alarm") {
     );
 
     // Автоочистка старых сохранённых вкладок.
-    if (settings.autoClose && settings.closeOldMinutes > 0) {
-      const maxAgeMs = settings.closeOldMinutes * 60 * 1000;
-      const before = savedTabs.length;
-
-      const filtered = savedTabs.filter(t => (now - t.closedAt) <= maxAgeMs);
-
-      if (filtered.length !== before) {
-        savedTabs.length = 0;
-        savedTabs.push(...filtered);
-        savedTabsChanged = true;
-
-        await writeLogUnlocked(
-          "Автоочистка",
-          `Удалено устаревших: ${before - filtered.length}`
-        );
-      }
+    if (await cleanupStaleSavedTabsUnlocked(settings, savedTabs, now)) {
+      savedTabsChanged = true;
     }
 
     const tabs = await chrome.tabs.query({});
