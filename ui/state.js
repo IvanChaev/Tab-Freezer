@@ -94,8 +94,8 @@ export function sortOpenTabs(tabs, mode) {
       if (!a.active && b.active) return 1;
       if (!a.discarded && b.discarded) return -1;
       if (a.discarded && !b.discarded) return 1;
-      const aTime = a.active ? 0 : (now - (a.lastActiveTime || a.lastAccessed || now));
-      const bTime = b.active ? 0 : (now - (b.lastActiveTime || b.lastAccessed || now));
+      const aTime = a.active ? 0 : (now - (a.lastActiveTime != null ? a.lastActiveTime : (a.lastAccessed != null ? a.lastAccessed : now)));
+      const bTime = b.active ? 0 : (now - (b.lastActiveTime != null ? b.lastActiveTime : (b.lastAccessed != null ? b.lastAccessed : now)));
       return aTime - bTime;
     });
   }
