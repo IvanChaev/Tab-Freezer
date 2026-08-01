@@ -92,6 +92,7 @@ describe("resetDeactivationTimes", () => {
   it("очищает карту и currentActiveTabId", async () => {
     lastDeactivationTimes.set(99, Date.now());
     chrome._mock.addTab({ id: 1, active: true });
+    chrome._mock.addTab({ id: 2, active: false });
 
     await resetDeactivationTimes();
 
