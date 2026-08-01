@@ -99,7 +99,9 @@ async function isEligibleForFreeze(tab, settings) {
   if (settings.excludePinned && tab.pinned) return false;
 
   if (settings.excludeAudio) {
-    if (isTabAudibleWithBuffer(tab.id, tab.audible)) {
+    // ВАЖНО: isTabAudibleWithBuffer теперь асинхронная — буфер живёт
+    // в chrome.storage.session и переживает перезапуски сервис-воркера.
+    if (await isTabAudibleWithBuffer(tab.id, tab.audible)) {
       return false;
     }
   }
