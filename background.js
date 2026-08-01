@@ -59,12 +59,16 @@ function registerListeners() {
 
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.audible !== undefined) {
-      updateAudioCache(tabId, changeInfo.audible);
+      updateAudioCache(tabId, changeInfo.audible).catch(e =>
+        console.error("updateAudioCache error:", e)
+      );
     }
   });
 
   chrome.tabs.onRemoved.addListener((tabId) => {
-    removeFromAudioCache(tabId);
+    removeFromAudioCache(tabId).catch(e =>
+      console.error("removeFromAudioCache error:", e)
+    );
   });
 }
 
@@ -86,5 +90,7 @@ function registerListeners() {
     console.error("Ошибка стартовой проверки:", e);
   }
 
-  setInterval(cleanAudioCache, 30000);
+  setInterval(() => {
+    cleanAudioCache().catch(e => console.error("cleanAudioCache error:", e));
+  }, 30000);
 })();
