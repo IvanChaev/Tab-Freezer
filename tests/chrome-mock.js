@@ -1,12 +1,15 @@
 // @ts-check
 // tests/chrome-mock.js — фабрика моков для chrome.* API
 
+import { vi } from "vitest";
+
 /**
  * Создаёт свежий набор моков chrome.* для каждого теста.
  * Каждый мок можно переопределить через mockImplementation/ mockReturnValue
  */
 export function createChromeMock() {
   const store = {};
+  const sessionStore = {};
 
   /** @param {string|string[]} keys */
   function localGet(keys) {
@@ -26,6 +29,27 @@ export function createChromeMock() {
   function localRemove(keys) {
     if (typeof keys === "string") keys = [keys];
     for (const k of keys) delete store[k];
+    return Promise.resolve();
+  }
+
+  /** @param {string|string[]} keys */
+  function sessionGet(keys) {
+    if (typeof keys === "string") keys = [keys];
+    const result = {};
+    for (const k of keys) {
+      if (k in sessionStore) result[k] = sessionStore[k];
+    }
+    return Promise.resolve(result);
+  }
+
+  function sessionSet(items) {
+    Object.assign(sessionStore, items);
+    return Promise.resolve();
+  }
+
+  function sessionRemove(keys) {
+    if (typeof keys === "string") keys = [keys];
+    for (const k of keys) delete sessionStore[k];
     return Promise.resolve();
   }
 
@@ -96,6 +120,13 @@ export function createChromeMock() {
         set: vi.fn(localSet),
         remove: vi.fn(localRemove),
       },
+      // Добавлено: используется bg/audio-cache.js, чтобы буфер "вкладка
+      // недавно издавала звук" переживал перезапуски сервис-воркера.
+      session: {
+        get: vi.fn(sessionGet),
+        set: vi.fn(sessionSet),
+        remove: vi.fn(sessionRemove),
+      },
     },
     tabs: {
       query: vi.fn((queryInfo) => queryTabs(queryInfo)),
@@ -149,6 +180,7 @@ export function createChromeMock() {
       /** Очистить всё */
       reset() {
         Object.keys(store).forEach(k => delete store[k]);
+        Object.keys(sessionStore).forEach(k => delete sessionStore[k]);
         Object.keys(tabsDb).forEach(k => delete tabsDb[k]);
         activeTabId = null;
         nextTabId = 100;
