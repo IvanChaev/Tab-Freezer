@@ -128,6 +128,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // ---- Реакция на изменение данных в chrome.storage.local ----
+  // Надёжнее сообщений: срабатывает всегда, когда данные реально изменились,
+  // даже если страница не была видима и сообщение freeze-done было пропущено.
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local") return;
+    if (changes.savedTabs) {
+      state.refreshSavedList?.();
+    }
+    if (changes.tempExemptions) {
+      state.refreshTempExemptions?.();
+    }
+  });
+
   // ---- Автоматическое обновление списка при переключении вкладок ----
   chrome.tabs.onActivated.addListener(() => {
     // Пользователь переключился на другую вкладку — нужно обновить отображение,

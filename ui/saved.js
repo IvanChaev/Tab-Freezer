@@ -19,9 +19,16 @@ export function initSavedTabs(state, showToast) {
   /** @type {VirtualList<import("../types.js").SavedEntry>|null} */
   let virtualList = null;
 
+  // Номер последнего запроса. Если ответ пришёл после более нового запроса —
+  // он устарел, и его нельзя применять (иначе пустой список мог бы
+  // "перезатереть" свежие данные и надпись "Список пуст" не исчезла бы).
+  let savedRequestSeq = 0;
+
   async function refreshSavedList() {
+    const seq = ++savedRequestSeq;
     try {
       const res = await chrome.runtime.sendMessage({ type: "get-saved-frozen-tabs" });
+      if (seq !== savedRequestSeq) return;
       state.savedTabsCache = res?.tabs || [];
       renderSavedList();
     } catch (err) {
